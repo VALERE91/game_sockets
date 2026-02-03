@@ -52,7 +52,7 @@ enum BackendCommand {
 
 impl GameSocketProtocol for UdpProtocol {
     fn init(&mut self) -> Result<(), GameSocketError> {
-        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<BackendCommand>();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<BackendCommand>();
         let (event_tx, event_rx) = mpsc::unbounded_channel::<GameNetworkEvent>();
 
         self.cmd_tx = Some(cmd_tx);

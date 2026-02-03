@@ -1,6 +1,6 @@
 mod utils;
 
-use utils::BenchmarkPacket;
+use utils::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
@@ -12,6 +12,8 @@ fn main() -> Result<(), GameSocketError>{
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    let recorder = MetricsRecorder::new("results.csv");
+
     let protocol = UdpProtocol::new();
     let mut client = GamePeer::new(protocol);
     client.connect("127.0.0.1", 8080)?;
@@ -22,8 +24,6 @@ fn main() -> Result<(), GameSocketError>{
     let mut server_id = None;
 
     let mut packet_seq_id = 0u64;
-    // Track stats
-    let mut sent_packets = std::collections::HashSet::new();
 
     // Timers
     let mut last_60hz_tick = Instant::now();
@@ -45,18 +45,23 @@ fn main() -> Result<(), GameSocketError>{
                     need_stop = true;
                     break;
                 }
-                GameNetworkEvent::Message { connection, stream: _stream, data } => {
+                GameNetworkEvent::Message { connection, stream, data } => {
                     if let Some(packet) = BenchmarkPacket::from_bytes(data) {
 
-                        // 2. Compute Latency (RTT)
+                        // Compute Latency (RTT)
                         let now_micros = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as u64;
                         let rtt_micros = now_micros.saturating_sub(packet.timestamp);
 
                         debug!("Packet [{}] RTT: {} µs | Payload: {} bytes",
                                  packet.id, rtt_micros, packet.payload.len());
 
-                        // 3. Mark as received for Drop calculation
-                        sent_packets.remove(&packet.id);
+                        recorder.record(BenchmarkRecord {
+                            packet_id: packet.id,
+                            stream_id: stream.stream_id,
+                            rtt_us: rtt_micros,
+                            payload_size: packet.payload.len(),
+                            recv_timestamp: now_micros,
+                        });
                     }  else {
                         warn!("Received invalid packet from server: {:?}", connection);
                     }
@@ -76,8 +81,6 @@ fn main() -> Result<(), GameSocketError>{
                 packet_seq_id += 1;
                 // Create packet with 1000 bytes of random data
                 let packet = BenchmarkPacket::new(packet_seq_id, 1000);
-                // Store ID to check for drops later (e.g., check set size every second)
-                sent_packets.insert(packet_seq_id);
                 // Send
                 client.send(&conn, 1u16.into(), packet.to_bytes());
                 last_60hz_tick = now;
@@ -88,8 +91,6 @@ fn main() -> Result<(), GameSocketError>{
                 packet_seq_id += 1;
                 // Create packet with 1000 bytes of random data
                 let packet = BenchmarkPacket::new(packet_seq_id, 1000);
-                // Store ID to check for drops later (e.g., check set size every second)
-                sent_packets.insert(packet_seq_id);
                 // Send
                 client.send(&conn, 2u16.into(), packet.to_bytes());
                 last_20hz_tick = now;
