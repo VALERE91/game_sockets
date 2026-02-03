@@ -85,12 +85,12 @@ impl GameSocketProtocol for UdpProtocol {
         self.send_cmd(BackendCommand::Connect { addr: remote_host.to_string(), port: remote_port })
     }
 
-    fn create_stream(&mut self, _conn: GameConnection, _reliability: GameStreamReliability) -> Result<(), GameSocketError> {
+    fn create_stream(&mut self, conn: GameConnection, reliability: GameStreamReliability) -> Result<(), GameSocketError> {
         self.next_stream_id += 1;
         self.send_cmd(BackendCommand::CreateStream {
-            connection: _conn.connection_id,
+            connection: conn.connection_id,
             stream: self.next_stream_id,
-            reliability: _reliability
+            reliability: reliability
         })
     }
 

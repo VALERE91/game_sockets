@@ -30,7 +30,7 @@ fn main() -> Result<(), GameSocketError>{
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let protocol = UdpProtocol::new();
+    let protocol = TcpProtocol::new();
     let mut server = GamePeer::new(protocol);
     server.listen(8080)?;
     info!("Server started on port 8080");

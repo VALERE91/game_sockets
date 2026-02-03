@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::{Parser, ValueEnum};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
-use game_sockets::protocols::UdpProtocol;
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameSocketProtocol, GameStream, GameStreamReliability};
+use game_sockets::protocols::{TcpProtocol, UdpProtocol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum TestProtocol {
@@ -41,7 +41,7 @@ fn main() -> Result<(), GameSocketError>{
 
     let recorder = MetricsRecorder::new(&args.results);
 
-    let protocol = UdpProtocol::new();
+    let protocol = TcpProtocol::new();
     let mut client = GamePeer::new(protocol);
     client.connect(&args.ip, args.port)?;
 
@@ -148,7 +148,7 @@ fn main() -> Result<(), GameSocketError>{
     Ok(())
 }
 
-fn send_packet(conn: &GameConnection, stream: &GameStream, client: &mut GamePeer<UdpProtocol>,
+fn send_packet<T : GameSocketProtocol>(conn: &GameConnection, stream: &GameStream, client: &mut GamePeer<T>,
                padding: usize, packet_sequences: &mut HashMap<GameStream, u64>) {
     let packet_seq_id = packet_sequences.entry(stream.clone()).or_insert(0);
     let packet = BenchmarkPacket::new(*packet_seq_id, padding);
