@@ -14,7 +14,7 @@ fn main() -> Result<(), GameSocketError>{
 
     let protocol = UdpProtocol::new();
     let mut client = GamePeer::new(protocol);
-    client.connect("0.0.0.0", 8080)?;
+    client.connect("127.0.0.1", 8080)?;
 
     let mut need_stop: bool = false;
 

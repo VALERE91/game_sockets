@@ -163,7 +163,7 @@ impl UdpBackend {
     async fn process_command(&mut self, cmd: BackendCommand) {
         match cmd {
             BackendCommand::Bind { interface, port } => {
-                // Only bind if we don't have a socket (or if explicit re-bind is requested, though usually we guard this)
+                // Only bind if we don't have a socket
                 if self.socket.is_none() {
                     if let Ok(s) = UdpSocket::bind(format!("{}:{}", interface, port)).await {
                         self.socket = Some(Arc::new(s));
