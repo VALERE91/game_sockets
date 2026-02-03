@@ -58,113 +58,11 @@ impl GameSocketProtocol for UdpProtocol {
         self.cmd_tx = Some(cmd_tx);
         self.event_rx = Some(event_rx);
 
-        // Spawn the Tokio Runtime on a dedicated thread
+        // Spawn thread, but delegate logic to the Backend struct
         let handle = thread::spawn(move || {
             let rt = Runtime::new().expect("Failed to create Tokio runtime");
-
-            rt.block_on(async move {
-                // State held by the async backend
-                let mut socket: Option<Arc<UdpSocket>> = None;
-                // Simple map to associate UUIDs with Addresses (Virtual Connection)
-                let mut connections: std::collections::HashMap<uuid::Uuid, SocketAddr> = std::collections::HashMap::new();
-
-                // Buffer for reading
-                let mut buf = [0u8; 1400]; // Standard MTU safe size
-
-                loop {
-                    // We need to select between reading from the socket (if it exists)
-                    // and reading commands from the game thread.
-                    tokio::select! {
-                        // 1. Handle Commands from Game Thread
-                        Some(cmd) = cmd_rx.recv() => {
-                            match cmd {
-                                BackendCommand::Bind { interface, port } => {
-                                    match UdpSocket::bind(format!("{}:{}", interface, port)).await {
-                                        Ok(s) => socket = Some(Arc::new(s)),
-                                        Err(_) => {
-                                            return
-                                        }
-                                    }
-                                }
-                                BackendCommand::Connect { addr, port } => {
-                                    // In UDP, "Connect" just means remembering the address
-                                    let uuid = uuid::Uuid::new_v4();
-                                    let addr_str = format!("{}:{}", addr, port);
-                                    let addr = addr_str.parse::<SocketAddr>()
-                                            .map_err(|_| GameSocketError::ConnectionError);
-                                    let Ok(addr) = addr else {
-                                        return
-                                    };
-                                    connections.insert(uuid, addr);
-                                    let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
-                                }
-                                BackendCommand::Send { connection, stream, data } => {
-                                    if let Some(socket) = &socket {
-                                        if let Some(remote_addr) = connections.get(&connection) {
-                                            // Capacity = 16 (UUID) + 2 (Stream) + Data Len
-                                            let mut packet = BytesMut::with_capacity(HEADER_SIZE + data.len());
-
-                                            // Write Header
-                                            packet.put_slice(connection.as_bytes());
-                                            packet.put_u16(stream); // Network Endian (Big Endian) by default
-
-                                            // Write Payload
-                                            packet.put(data);
-
-                                            // Send
-                                            let _ = socket.send_to(&packet, remote_addr).await;
-                                        }
-                                    }
-                                }
-                                BackendCommand::Shutdown => break,
-                                BackendCommand::CreateStream{ .. } => {},
-                                BackendCommand::CloseStream{ .. } => {}}
-                        }
-
-                        // 2. Handle Incoming UDP Packets
-                        // We only poll this branch if the socket is actually bound
-                        Ok((len, addr)) = async {
-                            match &socket {
-                                Some(s) => s.recv_from(&mut buf).await,
-                                None => std::future::pending().await,
-                            }
-                        } => {
-                            if len < HEADER_SIZE {
-                                continue;
-                            }
-
-                            // UUID is bytes 0..16
-                            // StreamID is bytes 16..18
-                            let uuid_bytes = &buf[0..16];
-                            let Ok(incoming_uuid) = Uuid::from_slice(uuid_bytes) else {continue;};
-                            let stream_id = u16::from_be_bytes([buf[16], buf[17]]);
-
-                            // If we don't know this UUID, it's a new client.
-                            match connections.entry(incoming_uuid) {
-                                std::collections::hash_map::Entry::Vacant(entry) => {
-                                    entry.insert(addr);
-                                    let _ = event_tx.send(GameNetworkEvent::Connected(incoming_uuid.into()));
-                                }
-                                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                                    // Handle NAT rebinding (client IP changed but UUID is same)
-                                    if *entry.get() != addr {
-                                        entry.insert(addr);
-                                    }
-                                }
-                            }
-
-                            // Data starts at offset 18
-                            let payload = Bytes::copy_from_slice(&buf[HEADER_SIZE..len]);
-
-                            let _ = event_tx.send(GameNetworkEvent::Message {
-                                connection: incoming_uuid.into(),
-                                stream: stream_id.into(),
-                                data: payload
-                            });
-                        }
-                    }
-                }
-            });
+            let mut backend = UdpBackend::new(event_tx);
+            rt.block_on(backend.run(cmd_rx));
         });
 
         self.thread_handle = Some(handle);
@@ -212,5 +110,114 @@ impl GameSocketProtocol for UdpProtocol {
             let _ = handle.join();
         }
         Ok(())
+    }
+}
+
+struct UdpBackend {
+    socket: Option<Arc<UdpSocket>>,
+    connections: std::collections::HashMap<Uuid, SocketAddr>,
+    event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
+}
+
+impl UdpBackend {
+    fn new(event_tx: mpsc::UnboundedSender<GameNetworkEvent>) -> Self {
+        Self {
+            socket: None,
+            connections: std::collections::HashMap::new(),
+            event_tx,
+        }
+    }
+
+    /// Main Event Loop
+    async fn run(&mut self, mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>) {
+        let mut buf = [0u8; 2048];
+
+        loop {
+            // We construct the receive future here to satisfy the borrow checker
+            let recv_future = async {
+                match &self.socket {
+                    Some(s) => s.recv_from(&mut buf).await,
+                    None => std::future::pending().await,
+                }
+            };
+
+            tokio::select! {
+                //Handle Commands
+                Some(cmd) = cmd_rx.recv() => {
+                    if matches!(cmd, BackendCommand::Shutdown) { break; }
+                    self.process_command(cmd).await;
+                }
+
+                //Handle Network Traffic
+                res = recv_future => {
+                    match res {
+                        Ok((len, addr)) => self.process_packet(&buf[..len], addr),
+                        Err(_) => tokio::task::yield_now().await, // Simple error backoff
+                    }
+                }
+            }
+        }
+    }
+
+    /// Command Processor (Under 40 LOC)
+    async fn process_command(&mut self, cmd: BackendCommand) {
+        match cmd {
+            BackendCommand::Bind { interface, port } => {
+                // Only bind if we don't have a socket (or if explicit re-bind is requested, though usually we guard this)
+                if self.socket.is_none() {
+                    if let Ok(s) = UdpSocket::bind(format!("{}:{}", interface, port)).await {
+                        self.socket = Some(Arc::new(s));
+                    }
+                }
+            }
+            BackendCommand::Connect { addr, port } => {
+                if let Ok(socket_addr) = format!("{}:{}", addr, port).parse::<SocketAddr>() {
+                    let uuid = Uuid::new_v4();
+                    self.connections.insert(uuid, socket_addr);
+                    let _ = self.event_tx.send(GameNetworkEvent::Connected(uuid.into()));
+                }
+            }
+            BackendCommand::Send { connection, stream, data } => {
+                if let Some(socket) = &self.socket {
+                    if let Some(remote_addr) = self.connections.get(&connection) {
+                        let mut packet = BytesMut::with_capacity(HEADER_SIZE + data.len());
+                        packet.put_slice(connection.as_bytes());
+                        packet.put_u16(stream);
+                        packet.put(data);
+                        let _ = socket.send_to(&packet, remote_addr).await;
+                    }
+                }
+            }
+            _ => {} // Handled in loop
+        }
+    }
+
+    /// Packet Processor
+    fn process_packet(&mut self, buf: &[u8], addr: SocketAddr) {
+        if buf.len() < HEADER_SIZE { return; }
+
+        let Ok(incoming_uuid) = Uuid::from_slice(&buf[0..16]) else { return };
+        let stream_id = u16::from_be_bytes([buf[16], buf[17]]);
+
+        // Auto-Accept / Update Address Logic
+        match self.connections.entry(incoming_uuid) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(addr);
+                let _ = self.event_tx.send(GameNetworkEvent::Connected(incoming_uuid.into()));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if *entry.get() != addr {
+                    entry.insert(addr);
+                }
+            }
+        }
+
+        // Dispatch Message
+        let payload = Bytes::copy_from_slice(&buf[HEADER_SIZE..]);
+        let _ = self.event_tx.send(GameNetworkEvent::Message {
+            connection: incoming_uuid.into(),
+            stream: stream_id.into(),
+            data: payload
+        });
     }
 }
