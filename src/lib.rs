@@ -89,8 +89,8 @@ pub enum GameNetworkEvent {
         connection: GameConnection,
         inner: GameSocketError
     },
-    StreamCreated(GameStream),
-    StreamClosed(GameStream),
+    StreamCreated(GameConnection, GameStream),
+    StreamClosed(GameConnection, GameStream),
 }
 
 impl<P: GameSocketProtocol> GamePeer<P> {

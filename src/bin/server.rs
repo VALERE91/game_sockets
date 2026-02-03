@@ -66,7 +66,11 @@ fn main() -> Result<(), GameSocketError> {
             let server = GamePeer::new(protocol);
             run_benchmark(server, &args)
         },
-        TestProtocol::Quic => unimplemented!("QUIC coming soon"),
+        TestProtocol::Quic => {
+            let protocol = QuicProtocol::new();
+            let client = GamePeer::new(protocol);
+            run_benchmark(client, &args)
+        },
         TestProtocol::GNS => unimplemented!("GNS coming soon"),
     }
 }

@@ -198,11 +198,11 @@ impl UdpBackend {
                     }
                 }
             }
-            BackendCommand::CreateStream { connection: _, stream, reliability } => {
-                let _ = self.event_tx.send(GameNetworkEvent::StreamCreated(GameStream::new(stream, reliability)));
+            BackendCommand::CreateStream { connection, stream, reliability } => {
+                let _ = self.event_tx.send(GameNetworkEvent::StreamCreated(connection.into(), GameStream::new(stream, reliability)));
             }
-            BackendCommand::CloseStream { connection: _, stream } => {
-                let _ = self.event_tx.send(GameNetworkEvent::StreamClosed(stream.into()));
+            BackendCommand::CloseStream { connection, stream } => {
+                let _ = self.event_tx.send(GameNetworkEvent::StreamClosed(connection.into(), stream.into()));
             }
             _ => {} // Handled in loop
         }

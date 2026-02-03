@@ -7,7 +7,7 @@ use clap::{Parser, ValueEnum};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameSocketProtocol, GameStream, GameStreamReliability};
-use game_sockets::protocols::{TcpProtocol, UdpProtocol};
+use game_sockets::protocols::{QuicProtocol, TcpProtocol, UdpProtocol};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -43,7 +43,11 @@ fn main() -> Result<(), GameSocketError> {
             let client = GamePeer::new(protocol);
             run_benchmark(client, &args)
         },
-        TestProtocol::Quic => unimplemented!("QUIC coming soon"),
+        TestProtocol::Quic => {
+            let protocol = QuicProtocol::new();
+            let client = GamePeer::new(protocol);
+            run_benchmark(client, &args)
+        },
         TestProtocol::GNS => unimplemented!("GNS coming soon"),
     }
 }
@@ -108,14 +112,14 @@ client.connect(&args.ip, args.port)?;
                 GameNetworkEvent::Error { connection: _connection, inner } => {
                     warn!("Error from server: {:?}", inner);
                 }
-                GameNetworkEvent::StreamCreated(stream) => {
+                GameNetworkEvent::StreamCreated(_, stream) => {
                     if stream.is_reliable() {
                         reliable_game_stream = Some(stream);
                     } else {
                         unreliable_game_stream = Some(stream);
                     }
                 }
-                GameNetworkEvent::StreamClosed(stream) => {
+                GameNetworkEvent::StreamClosed(_, stream) => {
                     if stream.is_reliable() {
                         reliable_game_stream = None;
                     } else {
