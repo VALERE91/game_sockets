@@ -1,3 +1,5 @@
+mod utils;
+
 use std::vec;
 use game_sockets::*;
 use game_sockets::protocols::*;
@@ -41,7 +43,6 @@ fn main() -> Result<(), GameSocketError>{
             //No more events
             continue;
         };
-        println!("{:?}", event);
 
         match event {
             GameNetworkEvent::Connected(connection) => {
@@ -53,8 +54,13 @@ fn main() -> Result<(), GameSocketError>{
                 state.remove_client(connection);
             },
             GameNetworkEvent::Message {connection, stream, data } => {
-                println!("Client {:?} sent message {:?} on stream {:?}", connection, data, stream);
-                server.send(connection, stream, data.clone())
+                use utils::BenchmarkPacket;
+                let Some(packet) = BenchmarkPacket::from_bytes(data) else {
+                    println!("Received invalid packet from client: {:?}", connection);
+                    continue;
+                };
+                println!("Received packet {} from client: {:?}", packet.id, connection);
+                server.send(&connection, stream, packet.to_bytes())
             },
             GameNetworkEvent::StreamCreated(_) | GameNetworkEvent::StreamClosed(_) => todo!(),
             GameNetworkEvent::Error { .. } => todo!()

@@ -8,7 +8,7 @@ pub trait GameSocketProtocol {
     fn connect(&mut self, remote_host: &str, remote_port: u16) -> Result<(), GameSocketError>;
     fn create_stream(&mut self, conn: GameConnection, reliability: GameStreamReliability) -> Result<(), GameSocketError>;
     fn close_stream(&mut self, conn: GameConnection, stream: GameStream) -> Result<(), GameSocketError>;
-    fn send(&mut self, conn: GameConnection, stream: GameStream, msg: bytes::Bytes) -> Result<(), GameSocketError>;
+    fn send(&mut self, conn: &GameConnection, stream: GameStream, msg: bytes::Bytes) -> Result<(), GameSocketError>;
     fn poll(&mut self) -> Result<Option<GameNetworkEvent>, GameSocketError>;
     fn shutdown(&mut self) -> Result<(), GameSocketError>;
 }
@@ -18,7 +18,7 @@ pub struct GamePeer<TProtocol: GameSocketProtocol> {
     pub protocol: TProtocol
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct GameConnection {
     pub connection_id: uuid::Uuid
 }
@@ -86,7 +86,7 @@ impl<P: GameSocketProtocol> GamePeer<P> {
         self.protocol.close_stream(conn, stream)
     }
 
-    pub fn send(&mut self, conn: GameConnection, stream: GameStream, msg: bytes::Bytes) {
+    pub fn send(&mut self, conn: &GameConnection, stream: GameStream, msg: bytes::Bytes) {
         let _ = self.protocol.send(conn, stream, msg);
     }
 

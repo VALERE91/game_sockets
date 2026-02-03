@@ -196,8 +196,7 @@ impl GameSocketProtocol for UdpProtocol {
         Ok(())
     }
 
-    fn send(&mut self, conn: GameConnection, stream: GameStream, msg: Bytes) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Bind { interface: "0.0.0.0".to_string(), port: 0})?;
+    fn send(&mut self, conn: &GameConnection, stream: GameStream, msg: Bytes) -> Result<(), GameSocketError> {
         self.send_cmd(BackendCommand::Send { connection: conn.connection_id, stream: stream.stream_id, data: msg })
     }
 
