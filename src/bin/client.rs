@@ -40,7 +40,7 @@ fn main() -> Result<(), GameSocketError>{
                     need_stop = true;
                     break;
                 }
-                GameNetworkEvent::Message { connection, stream, data } => {
+                GameNetworkEvent::Message { connection, stream: _stream, data } => {
                     if let Some(packet) = BenchmarkPacket::from_bytes(data) {
 
                         // 2. Compute Latency (RTT)
@@ -86,7 +86,7 @@ fn main() -> Result<(), GameSocketError>{
                 // Store ID to check for drops later (e.g., check set size every second)
                 sent_packets.insert(packet_seq_id);
                 // Send
-                client.send(&conn, 1u16.into(), packet.to_bytes());
+                client.send(&conn, 2u16.into(), packet.to_bytes());
                 last_20hz_tick = now;
             }
         } else {

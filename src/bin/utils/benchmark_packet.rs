@@ -21,7 +21,7 @@ impl BenchmarkPacket {
     pub fn new(id: u64, size: usize) -> Self {
         // Generate random payload
         let mut payload = vec![0u8; size];
-        rand::thread_rng().fill_bytes(&mut payload);
+        rand::rng().fill_bytes(&mut payload);
 
         // Current time in micros
         let timestamp = SystemTime::now()

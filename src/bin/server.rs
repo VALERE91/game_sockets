@@ -62,8 +62,7 @@ fn main() -> Result<(), GameSocketError>{
                 println!("Received packet {} from client: {:?}", packet.id, connection);
                 server.send(&connection, stream, packet.to_bytes())
             },
-            GameNetworkEvent::StreamCreated(_) | GameNetworkEvent::StreamClosed(_) => todo!(),
-            GameNetworkEvent::Error { .. } => todo!()
+            _ => {}
         }
     }
 }

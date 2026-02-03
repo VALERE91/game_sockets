@@ -14,11 +14,9 @@ const HEADER_SIZE: usize = 18; // 16 bytes (UUID) + 2 bytes (StreamID)
 pub struct UdpProtocol {
     /// Channel to send commands to the background runtime
     cmd_tx: Option<mpsc::UnboundedSender<BackendCommand>>,
-    cmd_rx: Option<mpsc::UnboundedReceiver<BackendCommand>>,
 
     /// Channel to receive events from the background runtime
     event_rx: Option<mpsc::UnboundedReceiver<GameNetworkEvent>>,
-    event_tx: Option<mpsc::UnboundedSender<GameNetworkEvent>>,
 
     /// Handle to the background thread (so we can join it on drop if needed)
     thread_handle: Option<thread::JoinHandle<()>>,
@@ -28,9 +26,7 @@ impl UdpProtocol {
     pub fn new() -> Self {
         Self {
             cmd_tx: None,
-            cmd_rx: None,
             event_rx: None,
-            event_tx: None,
             thread_handle: None,
         }
     }
@@ -187,13 +183,11 @@ impl GameSocketProtocol for UdpProtocol {
     }
 
     fn create_stream(&mut self, _conn: GameConnection, _reliability: GameStreamReliability) -> Result<(), GameSocketError> {
-        // Since stream creation is not supported (automatic) in UDP, we just ignore it.
-        Ok(())
+        self.send_cmd(BackendCommand::CreateStream { connection: _conn.connection_id, reliability: _reliability })
     }
 
     fn close_stream(&mut self, _conn: GameConnection, _stream: GameStream) -> Result<(), GameSocketError> {
-        // Since stream destruction is not supported (automatic) in UDP, we just ignore it.
-        Ok(())
+        self.send_cmd(BackendCommand::CloseStream { connection: _conn.connection_id, stream: _stream.stream_id })
     }
 
     fn send(&mut self, conn: &GameConnection, stream: GameStream, msg: Bytes) -> Result<(), GameSocketError> {
