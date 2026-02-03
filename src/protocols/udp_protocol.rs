@@ -11,6 +11,7 @@ use crate::{GameConnection, GameNetworkEvent, GameSocketError, GameSocketProtoco
 // Protocol Constants
 const HEADER_SIZE: usize = 18; // 16 bytes (UUID) + 2 bytes (StreamID)
 
+#[derive(Debug)]
 pub struct UdpProtocol {
     /// Channel to send commands to the background runtime
     cmd_tx: Option<mpsc::UnboundedSender<BackendCommand>>,
@@ -20,6 +21,9 @@ pub struct UdpProtocol {
 
     /// Handle to the background thread (so we can join it on drop if needed)
     thread_handle: Option<thread::JoinHandle<()>>,
+
+    /// Next Stream ID to use for new streams
+    next_stream_id: u16,
 }
 
 impl UdpProtocol {
@@ -28,6 +32,7 @@ impl UdpProtocol {
             cmd_tx: None,
             event_rx: None,
             thread_handle: None,
+            next_stream_id: 0,
         }
     }
 
@@ -45,7 +50,7 @@ enum BackendCommand {
     Bind { interface: String, port: u16 },
     Connect { addr: String, port: u16 },
     Send { connection: uuid::Uuid, stream: u16, data: Bytes },
-    CreateStream { connection: uuid::Uuid, reliability: GameStreamReliability },
+    CreateStream { connection: uuid::Uuid, stream: u16, reliability: GameStreamReliability },
     CloseStream { connection: uuid::Uuid, stream: u16 },
     Shutdown,
 }
@@ -81,14 +86,19 @@ impl GameSocketProtocol for UdpProtocol {
     }
 
     fn create_stream(&mut self, _conn: GameConnection, _reliability: GameStreamReliability) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::CreateStream { connection: _conn.connection_id, reliability: _reliability })
+        self.next_stream_id += 1;
+        self.send_cmd(BackendCommand::CreateStream {
+            connection: _conn.connection_id,
+            stream: self.next_stream_id,
+            reliability: _reliability
+        })
     }
 
     fn close_stream(&mut self, _conn: GameConnection, _stream: GameStream) -> Result<(), GameSocketError> {
         self.send_cmd(BackendCommand::CloseStream { connection: _conn.connection_id, stream: _stream.stream_id })
     }
 
-    fn send(&mut self, conn: &GameConnection, stream: GameStream, msg: Bytes) -> Result<(), GameSocketError> {
+    fn send(&mut self, conn: &GameConnection, stream: &GameStream, msg: Bytes) -> Result<(), GameSocketError> {
         self.send_cmd(BackendCommand::Send { connection: conn.connection_id, stream: stream.stream_id, data: msg })
     }
 
@@ -159,7 +169,7 @@ impl UdpBackend {
         }
     }
 
-    /// Command Processor (Under 40 LOC)
+    /// Command Processor
     async fn process_command(&mut self, cmd: BackendCommand) {
         match cmd {
             BackendCommand::Bind { interface, port } => {
@@ -187,6 +197,12 @@ impl UdpBackend {
                         let _ = socket.send_to(&packet, remote_addr).await;
                     }
                 }
+            }
+            BackendCommand::CreateStream { connection: _, stream, reliability } => {
+                let _ = self.event_tx.send(GameNetworkEvent::StreamCreated(GameStream::new(stream, reliability)));
+            }
+            BackendCommand::CloseStream { connection: _, stream } => {
+                let _ = self.event_tx.send(GameNetworkEvent::StreamClosed(stream.into()));
             }
             _ => {} // Handled in loop
         }

@@ -8,7 +8,7 @@ pub trait GameSocketProtocol {
     fn connect(&mut self, remote_host: &str, remote_port: u16) -> Result<(), GameSocketError>;
     fn create_stream(&mut self, conn: GameConnection, reliability: GameStreamReliability) -> Result<(), GameSocketError>;
     fn close_stream(&mut self, conn: GameConnection, stream: GameStream) -> Result<(), GameSocketError>;
-    fn send(&mut self, conn: &GameConnection, stream: GameStream, msg: bytes::Bytes) -> Result<(), GameSocketError>;
+    fn send(&mut self, conn: &GameConnection, stream: &GameStream, msg: bytes::Bytes) -> Result<(), GameSocketError>;
     fn poll(&mut self) -> Result<Option<GameNetworkEvent>, GameSocketError>;
     fn shutdown(&mut self) -> Result<(), GameSocketError>;
 }
@@ -26,6 +26,35 @@ pub struct GameConnection {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub struct GameStream {
     pub stream_id: u16
+}
+
+const RELIABILITY_MASK: u16 = 0b11;
+const ORDERING_MASK: u16 = 0b10;
+
+impl GameStream {
+    pub fn new(stream_id: u16, game_stream_reliability: GameStreamReliability) -> Self {
+        let mut stream_id = stream_id << 2;
+        if game_stream_reliability == GameStreamReliability::Ordered {
+            stream_id |= ORDERING_MASK;
+        }
+        if game_stream_reliability == GameStreamReliability::Reliable {
+            stream_id |= RELIABILITY_MASK;
+        }
+
+        Self {
+            stream_id
+        }
+    }
+
+    pub fn is_reliable(&self) -> bool {
+        //Check last bit of stream_id
+        self.stream_id & RELIABILITY_MASK != 0
+    }
+
+    pub fn is_ordered(&self) -> bool {
+        //Check second last bit of stream_id
+        self.stream_id & ORDERING_MASK != 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,7 +76,7 @@ pub enum GameSocketError {
     BindError(#[from] std::io::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug)]
 pub enum GameNetworkEvent {
     Connected(GameConnection),
     Disconnected(GameConnection),
@@ -58,6 +87,7 @@ pub enum GameNetworkEvent {
     },
     Error {
         connection: GameConnection,
+        inner: GameSocketError
     },
     StreamCreated(GameStream),
     StreamClosed(GameStream),
@@ -86,7 +116,7 @@ impl<P: GameSocketProtocol> GamePeer<P> {
         self.protocol.close_stream(conn, stream)
     }
 
-    pub fn send(&mut self, conn: &GameConnection, stream: GameStream, msg: bytes::Bytes) {
+    pub fn send(&mut self, conn: &GameConnection, stream: &GameStream, msg: bytes::Bytes) {
         let _ = self.protocol.send(conn, stream, msg);
     }
 

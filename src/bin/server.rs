@@ -66,7 +66,7 @@ fn main() -> Result<(), GameSocketError>{
                     continue;
                 };
                 debug!("Received packet {} from client: {:?}", packet.id, connection);
-                server.send(&connection, stream, packet.to_bytes())
+                server.send(&connection, &stream, packet.to_bytes())
             },
             _ => {}
         }
