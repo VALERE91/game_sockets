@@ -3,13 +3,18 @@ mod utils;
 use utils::BenchmarkPacket;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
+use tracing::{debug, info, warn};
 use game_sockets::{GameNetworkEvent, GamePeer, GameSocketError};
 use game_sockets::protocols::UdpProtocol;
 
 fn main() -> Result<(), GameSocketError>{
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
     let protocol = UdpProtocol::new();
     let mut client = GamePeer::new(protocol);
-    client.connect("127.0.0.1", 8080)?;
+    client.connect("0.0.0.0", 8080)?;
 
     let mut need_stop: bool = false;
 
@@ -31,11 +36,11 @@ fn main() -> Result<(), GameSocketError>{
         while let Some(event) = client.poll()? {
             match event {
                 GameNetworkEvent::Connected(connection) => {
-                    println!("Connected to server: {:?}", connection);
+                    info!("Connected to server: {:?}", connection);
                     server_id = Some(connection);
                 }
                 GameNetworkEvent::Disconnected(connection) => {
-                    println!("Disconnected from server: {:?}", connection);
+                    info!("Disconnected from server: {:?}", connection);
                     server_id = None;
                     need_stop = true;
                     break;
@@ -47,13 +52,13 @@ fn main() -> Result<(), GameSocketError>{
                         let now_micros = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as u64;
                         let rtt_micros = now_micros.saturating_sub(packet.timestamp);
 
-                        println!("Packet [{}] RTT: {} µs | Payload: {} bytes",
+                        debug!("Packet [{}] RTT: {} µs | Payload: {} bytes",
                                  packet.id, rtt_micros, packet.payload.len());
 
                         // 3. Mark as received for Drop calculation
                         sent_packets.remove(&packet.id);
                     }  else {
-                        println!("Received invalid packet from server: {:?}", connection);
+                        warn!("Received invalid packet from server: {:?}", connection);
                     }
                 }
                 GameNetworkEvent::Error { .. } => {}
@@ -90,7 +95,7 @@ fn main() -> Result<(), GameSocketError>{
                 last_20hz_tick = now;
             }
         } else {
-            println!("Not connected to server");
+            debug!("Not connected to server");
         }
 
         if need_stop {
@@ -99,6 +104,6 @@ fn main() -> Result<(), GameSocketError>{
         std::thread::yield_now();
     }
 
-    println!("Finished");
+    info!("Finished");
     Ok(())
 }
