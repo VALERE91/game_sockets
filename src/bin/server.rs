@@ -1,9 +1,11 @@
 mod utils;
 
 use std::vec;
+use clap::Parser;
 use tracing::{debug, error, info, warn};
 use game_sockets::*;
 use game_sockets::protocols::*;
+use crate::utils::TestProtocol;
 
 struct GlobalState {
     clients: Vec<GameConnection>,
@@ -25,13 +27,51 @@ impl GlobalState {
     }
 }
 
-fn main() -> Result<(), GameSocketError>{
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+struct CliArgs {
+    #[arg(value_enum)]
+    protocol: TestProtocol,
+    #[arg(
+        long,
+        short,
+        default_value = "0.0.0.0",
+        help = "IP address of the server to connect to (default: 0.0.0.0)"
+    )]
+    ip: String,
+    #[arg(
+        long,
+        short,
+        default_value = "8080",
+        help = "Port of the server to connect to (default: 8080)"
+    )]
+    port: u16
+}
+
+fn main() -> Result<(), GameSocketError> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let protocol = TcpProtocol::new();
-    let mut server = GamePeer::new(protocol);
+    let args = CliArgs::parse();
+
+    match args.protocol {
+        TestProtocol::Udp => {
+            let protocol = UdpProtocol::new();
+            let server = GamePeer::new(protocol);
+            run_benchmark(server, &args)
+        },
+        TestProtocol::Tcp => {
+            let protocol = TcpProtocol::new();
+            let server = GamePeer::new(protocol);
+            run_benchmark(server, &args)
+        },
+        TestProtocol::Quic => unimplemented!("QUIC coming soon"),
+        TestProtocol::GNS => unimplemented!("GNS coming soon"),
+    }
+}
+
+fn run_benchmark<P: GameSocketProtocol>(mut server: GamePeer<P>, args: &CliArgs) -> Result<(), GameSocketError> {
     server.listen(8080)?;
     info!("Server started on port 8080");
     let mut state = GlobalState::new();

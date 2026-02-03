@@ -9,14 +9,6 @@ use tracing::{debug, info, warn};
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameSocketProtocol, GameStream, GameStreamReliability};
 use game_sockets::protocols::{TcpProtocol, UdpProtocol};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum TestProtocol {
-    Udp,
-    Tcp,
-    Quic,
-    GNS
-}
-
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct CliArgs{
@@ -32,18 +24,34 @@ struct CliArgs{
     packet_size: usize,
 }
 
-fn main() -> Result<(), GameSocketError>{
+fn main() -> Result<(), GameSocketError> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let args = CliArgs::parse();
 
-    let recorder = MetricsRecorder::new(&args.results);
+    match args.protocol {
+        TestProtocol::Udp => {
+            // Configure UDP specifics here (e.g. loss rate) if needed
+            let protocol = UdpProtocol::new();
+            let client = GamePeer::new(protocol);
+            run_benchmark(client, &args)
+        },
+        TestProtocol::Tcp => {
+            let protocol = TcpProtocol::new();
+            let client = GamePeer::new(protocol);
+            run_benchmark(client, &args)
+        },
+        TestProtocol::Quic => unimplemented!("QUIC coming soon"),
+        TestProtocol::GNS => unimplemented!("GNS coming soon"),
+    }
+}
 
-    let protocol = TcpProtocol::new();
-    let mut client = GamePeer::new(protocol);
-    client.connect(&args.ip, args.port)?;
+// The compiler generates a specific version of this function for UDP, and another for TCP.
+fn run_benchmark<P: GameSocketProtocol>(mut client: GamePeer<P>, args: &CliArgs) -> Result<(), GameSocketError> {
+    let recorder = MetricsRecorder::new(&args.results);
+client.connect(&args.ip, args.port)?;
 
     let mut need_stop: bool = false;
 
