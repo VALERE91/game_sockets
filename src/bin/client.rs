@@ -3,7 +3,7 @@ mod utils;
 use std::collections::HashMap;
 use utils::*;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use clap::{Parser, ValueEnum};
+use clap::{Parser};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameSocketProtocol, GameStream, GameStreamReliability};

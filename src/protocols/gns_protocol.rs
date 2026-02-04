@@ -1,16 +1,13 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
+use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use tokio::runtime::Runtime;
+use bytes::{BufMut, Bytes, BytesMut};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
-
-// Use the crate as requested
 use gns::sys::*;
 use gns::*;
 
@@ -21,6 +18,8 @@ enum BackendCommand {
     Bind { port: u16 },
     Connect { addr: String, port: u16 },
     Send { connection: Uuid, stream: GameStream, data: Bytes },
+    CreateStream { connection: uuid::Uuid, stream: u16, reliability: GameStreamReliability },
+    CloseStream { connection: uuid::Uuid, stream: u16 },
     Shutdown,
 }
 
@@ -121,13 +120,18 @@ impl GameSocketProtocol for GnsProtocol {
         self.send_cmd(BackendCommand::Connect { addr: remote_host.to_string(), port: remote_port })
     }
 
-    fn create_stream(&mut self, _connection: GameConnection, _reliability: GameStreamReliability) -> Result<(), GameSocketError> {
-        // GNS doesn't need explicit stream creation, we just track IDs
+    fn create_stream(&mut self, connection: GameConnection, reliability: GameStreamReliability) -> Result<(), GameSocketError> {
         self.next_stream_id += 1;
-        Ok(())
+        self.send_cmd(BackendCommand::CreateStream {
+            connection: connection.connection_id,
+            stream: self.next_stream_id,
+            reliability: reliability
+        })
     }
 
-    fn close_stream(&mut self, _: GameConnection, _: GameStream) -> Result<(), GameSocketError> { Ok(()) }
+    fn close_stream(&mut self, conn: GameConnection, stream: GameStream) -> Result<(), GameSocketError> {
+        self.send_cmd(BackendCommand::CloseStream { connection: conn.connection_id, stream: stream.stream_id })
+    }
 
     fn send(&mut self, conn: &GameConnection, stream: &GameStream, msg: Bytes) -> Result<(), GameSocketError> {
         self.send_cmd(BackendCommand::Send { connection: conn.connection_id, stream: stream.clone(), data: msg })
@@ -197,7 +201,6 @@ impl GnsBackend {
                 match cmd {
                     BackendCommand::Bind { port } => {
                         let socket = GnsSocket::new(gns_global.clone());
-
                         match socket.listen(Ipv4Addr::UNSPECIFIED.into(), port) {
                             Ok(s) => {
                                 info!("GNS Listening on port {}", port);
@@ -240,12 +243,25 @@ impl GnsBackend {
                                     &final_bytes,
                                 );
 
+                                let lane = if stream.is_reliable() {
+                                    0
+                                } else {
+                                    1
+                                };
+                                let msg = msg.set_lane(lane);
+
                                 // Dispatch
                                 socket.send_messages(vec![msg]);
                             }
                         }
                     }
                     BackendCommand::Shutdown => return,
+                    BackendCommand::CreateStream { connection, stream, reliability } => {
+                        let _ = self.event_tx.send(GameNetworkEvent::StreamCreated(connection.into(), GameStream::new(stream, reliability)));
+                    },
+                    BackendCommand::CloseStream { connection, stream } => {
+                        let _ = self.event_tx.send(GameNetworkEvent::StreamClosed(connection.into(), stream.into()));
+                    },
                 }
             }
 
@@ -301,6 +317,22 @@ impl GnsBackend {
             // Connected (Client or Server completion)
             (ESteamNetworkingConnectionState::k_ESteamNetworkingConnectionState_Connecting,
                 ESteamNetworkingConnectionState::k_ESteamNetworkingConnectionState_Connected) => {
+
+                // A lane is defined by a priority and a weight.
+                let reliable_lane : GnsLane = (1,1);
+                let unreliable_lane = (1,1);
+                match socket {
+                    ActiveSocket::Server(s) => {
+                        let _ = s.configure_connection_lanes(conn, &[reliable_lane, unreliable_lane]);
+                    },
+                    ActiveSocket::Client(c) => {
+                        match c.configure_connection_lanes(conn, &[reliable_lane, unreliable_lane]) {
+                            Ok(_) => {},
+                            Err(e) => error!("Failed to configure lanes: {:?}", e),
+                        }
+                    }
+                }
+
                 // Register if not already known
                 if !self.handle_to_uuid.contains_key(&conn) {
                     let uuid = Uuid::new_v4();
@@ -309,6 +341,7 @@ impl GnsBackend {
                     let _ = self.event_tx.send(GameNetworkEvent::Connected(uuid.into()));
                     info!("GNS Connection Established: {:?}", uuid);
                 }
+
             }
 
             // Disconnect

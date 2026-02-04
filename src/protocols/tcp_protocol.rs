@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::thread;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::{SinkExt, StreamExt};

@@ -80,7 +80,7 @@ fn main() -> Result<(), GameSocketError> {
 }
 
 fn run_benchmark<P: GameSocketProtocol>(mut server: GamePeer<P>, args: &CliArgs) -> Result<(), GameSocketError> {
-    server.listen(8080)?;
+    server.listen(args.port)?;
     info!("Server started on port 8080");
     let mut state = GlobalState::new();
 
