@@ -57,29 +57,29 @@ fn main() -> Result<(), GameSocketError> {
 
     match args.protocol {
         TestProtocol::Udp => {
-            let protocol = UdpProtocol::new();
-            let server = GamePeer::new(protocol);
+            let backend = UdpBackend::new();
+            let server = GamePeer::new(backend);
             run_benchmark(server, &args)
         },
         TestProtocol::Tcp => {
-            let protocol = TcpProtocol::new();
-            let server = GamePeer::new(protocol);
-            run_benchmark(server, &args)
+            let backend = TcpBackend::new();
+            let client = GamePeer::new(backend);
+            run_benchmark(client, &args)
         },
         TestProtocol::Quic => {
-            let protocol = QuicProtocol::new();
-            let client = GamePeer::new(protocol);
+            let backend = QuicBackend::new();
+            let client = GamePeer::new(backend);
             run_benchmark(client, &args)
         },
         TestProtocol::GNS => {
-            let protocol = GnsProtocol::new();
-            let client = GamePeer::new(protocol);
+            let backend = GnsBackend::new();
+            let client = GamePeer::new(backend);
             run_benchmark(client, &args)
         },
     }
 }
 
-fn run_benchmark<P: GameSocketProtocol>(mut server: GamePeer<P>, args: &CliArgs) -> Result<(), GameSocketError> {
+fn run_benchmark(mut server: GamePeer, args: &CliArgs) -> Result<(), GameSocketError> {
     server.listen(args.port)?;
     info!("Server started on port 8080");
     let mut state = GlobalState::new();
@@ -114,7 +114,7 @@ fn run_benchmark<P: GameSocketProtocol>(mut server: GamePeer<P>, args: &CliArgs)
                     continue;
                 };
                 debug!("Received packet {} from client: {:?}", packet.id, connection);
-                server.send(&connection, &stream, packet.to_bytes())
+                server.send(&connection, &stream, packet.to_bytes())?;
             },
             _ => {}
         }

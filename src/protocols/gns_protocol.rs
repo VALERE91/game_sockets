@@ -3,25 +3,14 @@ use std::net::Ipv4Addr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 use bytes::{BufMut, Bytes, BytesMut};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 use gns::sys::*;
 use gns::*;
+use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameStream};
 
-use crate::{GameConnection, GameNetworkEvent, GameSocketError, GameSocketProtocol, GameStream, GameStreamReliability};
-
-// --- Backend Commands ---
-enum BackendCommand {
-    Bind { port: u16 },
-    Connect { addr: String, port: u16 },
-    Send { connection: Uuid, stream: GameStream, data: Bytes },
-    CreateStream { connection: uuid::Uuid, stream: u16, reliability: GameStreamReliability },
-    CloseStream { connection: uuid::Uuid, stream: u16 },
-    Shutdown,
-}
 
 enum ActiveSocket {
     Server(GnsSocket<IsServer>),
@@ -73,111 +62,17 @@ impl ActiveSocket {
     }
 }
 
-// --- Protocol Implementation ---
-
-pub struct GnsProtocol {
-    cmd_tx: Option<mpsc::UnboundedSender<BackendCommand>>,
-    event_rx: Option<mpsc::UnboundedReceiver<GameNetworkEvent>>,
-    thread_handle: Option<thread::JoinHandle<()>>,
-    next_stream_id: u16,
-}
-
-impl GnsProtocol {
-    pub fn new() -> Self {
-        Self { cmd_tx: None, event_rx: None, thread_handle: None, next_stream_id: 0 }
-    }
-
-    fn send_cmd(&self, cmd: BackendCommand) -> Result<(), GameSocketError> {
-        self.cmd_tx.as_ref()
-            .ok_or(GameSocketError::ConnectionError)?
-            .send(cmd)
-            .map_err(|_| GameSocketError::ConnectionError)
-    }
-}
-
-impl GameSocketProtocol for GnsProtocol {
-    fn init(&mut self) -> Result<(), GameSocketError> {
-        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
-        let (event_tx, event_rx) = mpsc::unbounded_channel();
-        self.cmd_tx = Some(cmd_tx);
-        self.event_rx = Some(event_rx);
-
-        let handle = thread::spawn(move || {
-            // We use a dedicated thread for the GNS loop
-            let mut backend = GnsBackend::new(event_tx);
-            backend.run(cmd_rx);
-        });
-
-        self.thread_handle = Some(handle);
-        Ok(())
-    }
-
-    fn listen(&mut self, _interface: &str, port: u16) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Bind { port })
-    }
-
-    fn connect(&mut self, remote_host: &str, remote_port: u16) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Connect { addr: remote_host.to_string(), port: remote_port })
-    }
-
-    fn create_stream(&mut self, connection: GameConnection, reliability: GameStreamReliability) -> Result<(), GameSocketError> {
-        self.next_stream_id += 1;
-        self.send_cmd(BackendCommand::CreateStream {
-            connection: connection.connection_id,
-            stream: self.next_stream_id,
-            reliability: reliability
-        })
-    }
-
-    fn close_stream(&mut self, conn: GameConnection, stream: GameStream) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::CloseStream { connection: conn.connection_id, stream: stream.stream_id })
-    }
-
-    fn send(&mut self, conn: &GameConnection, stream: &GameStream, msg: Bytes) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Send { connection: conn.connection_id, stream: stream.clone(), data: msg })
-    }
-
-    fn poll(&mut self) -> Result<Option<GameNetworkEvent>, GameSocketError> {
-        match &mut self.event_rx {
-            Some(rx) => match rx.try_recv() {
-                Ok(e) => Ok(Some(e)),
-                Err(mpsc::error::TryRecvError::Empty) => Ok(None),
-                Err(_) => Err(GameSocketError::ConnectionError),
-            },
-            None => Err(GameSocketError::ProtocolError { inner_msg: "Not initialized".into() }),
-        }
-    }
-
-    fn shutdown(&mut self) -> Result<(), GameSocketError> {
-        let _ = self.send_cmd(BackendCommand::Shutdown);
-        if let Some(h) = self.thread_handle.take() { let _ = h.join(); }
-        Ok(())
-    }
-}
-
-struct GnsBackend {
+pub struct GnsBackend {
     gns_global: Option<Arc<GnsGlobal>>,
     // Unified Socket Container
     socket: Option<ActiveSocket>,
 
     handle_to_uuid: HashMap<GnsConnection, Uuid>,
     uuid_to_handle: HashMap<Uuid, GnsConnection>,
-
-    event_tx: mpsc::UnboundedSender<GameNetworkEvent>,
 }
 
-impl GnsBackend {
-    fn new(event_tx: mpsc::UnboundedSender<GameNetworkEvent>) -> Self {
-        Self {
-            gns_global: None,
-            socket: None,
-            handle_to_uuid: HashMap::new(),
-            uuid_to_handle: HashMap::new(),
-            event_tx,
-        }
-    }
-
-    fn run(&mut self, mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>) {
+impl GameSocketBackend for GnsBackend {
+    fn run(mut self, mut cmd_rx: mpsc::UnboundedReceiver<BackendCommand>, event_tx: mpsc::UnboundedSender<GameNetworkEvent> ) {
         // 1. Initialize GNS Global
         let gns_global = match GnsGlobal::get() {
             Ok(g) => g,
@@ -199,14 +94,17 @@ impl GnsBackend {
             // A. Process Commands
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
-                    BackendCommand::Bind { port } => {
+                    BackendCommand::Bind { addr, port } => {
                         let socket = GnsSocket::new(gns_global.clone());
-                        match socket.listen(Ipv4Addr::UNSPECIFIED.into(), port) {
+                        let ip = Ipv4Addr::from_str(&addr).unwrap_or(Ipv4Addr::LOCALHOST);
+                        match socket.listen(ip.into(), port) {
                             Ok(s) => {
-                                info!("GNS Listening on port {}", port);
                                 self.socket = Some(ActiveSocket::Server(s));
                             }
-                            Err(e) => error!("GNS Listen Failed: {:?}", e),
+                            Err(_) => {
+                                error!("Failed to initialize GNS Global. Aborting backend.");
+                                return;
+                            }
                         }
                     }
                     BackendCommand::Connect { addr, port } => {
@@ -257,10 +155,10 @@ impl GnsBackend {
                     }
                     BackendCommand::Shutdown => return,
                     BackendCommand::CreateStream { connection, stream, reliability } => {
-                        let _ = self.event_tx.send(GameNetworkEvent::StreamCreated(connection.into(), GameStream::new(stream, reliability)));
+                        let _ = event_tx.send(GameNetworkEvent::StreamCreated(connection.into(), GameStream::new(stream, reliability)));
                     },
                     BackendCommand::CloseStream { connection, stream } => {
-                        let _ = self.event_tx.send(GameNetworkEvent::StreamClosed(connection.into(), stream.into()));
+                        let _ = event_tx.send(GameNetworkEvent::StreamClosed(connection.into(), stream.into()));
                     },
                 }
             }
@@ -273,12 +171,12 @@ impl GnsBackend {
 
                 // 1. Poll Events
                 socket.poll_event(|event| {
-                    self.handle_event(&socket, event);
+                    self.handle_event(&socket, event, &event_tx);
                 });
 
                 // 2. Poll Messages
                 socket.poll_messages(|message| {
-                    self.handle_message(message);
+                    self.handle_message(message, &event_tx);
                 });
 
                 // Put the socket back
@@ -289,11 +187,19 @@ impl GnsBackend {
             thread::yield_now();
         }
     }
+}
 
-    // --- Event Handlers ---
+impl GnsBackend {
+    pub fn new() -> Self {
+        Self {
+            gns_global: None,
+            socket: None,
+            handle_to_uuid: HashMap::new(),
+            uuid_to_handle: HashMap::new()
+        }
+    }
 
-    // Fixed: Takes event by value (GnsConnectionEvent)
-    fn handle_event(&mut self, socket: &ActiveSocket, event: GnsConnectionEvent) {
+    fn handle_event(&mut self, socket: &ActiveSocket, event: GnsConnectionEvent, event_tx: &mpsc::UnboundedSender<GameNetworkEvent>) {
         let old_state = event.old_state();
         let new_state = event.info().state();
         let conn = event.connection();
@@ -309,7 +215,7 @@ impl GnsBackend {
                     let uuid = Uuid::new_v4();
                     self.handle_to_uuid.insert(conn, uuid);
                     self.uuid_to_handle.insert(uuid, conn);
-                    let _ = self.event_tx.send(GameNetworkEvent::Connected(uuid.into()));
+                    let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
                     info!("GNS Accepted Client: {:?}", uuid);
                 }
             }
@@ -338,7 +244,7 @@ impl GnsBackend {
                     let uuid = Uuid::new_v4();
                     self.handle_to_uuid.insert(conn, uuid);
                     self.uuid_to_handle.insert(uuid, conn);
-                    let _ = self.event_tx.send(GameNetworkEvent::Connected(uuid.into()));
+                    let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
                     info!("GNS Connection Established: {:?}", uuid);
                 }
 
@@ -349,7 +255,7 @@ impl GnsBackend {
             (_, ESteamNetworkingConnectionState::k_ESteamNetworkingConnectionState_ProblemDetectedLocally) => {
                 if let Some(uuid) = self.handle_to_uuid.remove(&conn) {
                     self.uuid_to_handle.remove(&uuid);
-                    let _ = self.event_tx.send(GameNetworkEvent::Disconnected(uuid.into()));
+                    let _ = event_tx.send(GameNetworkEvent::Disconnected(uuid.into()));
                     info!("GNS Disconnected: {:?}", uuid);
                 }
                 socket.close_connection(conn);
@@ -359,7 +265,7 @@ impl GnsBackend {
     }
 
     // Fixed: Takes message by value (GnsMessage)
-    fn handle_message(&mut self, message: &GnsNetworkMessage<ToReceive>) {
+    fn handle_message(&mut self, message: &GnsNetworkMessage<ToReceive>, event_tx: &mpsc::UnboundedSender<GameNetworkEvent>) {
         let payload = message.payload();
         let conn = message.connection();
 
@@ -369,7 +275,7 @@ impl GnsBackend {
                 let stream_id = u16::from_be_bytes([payload[0], payload[1]]);
                 let data = Bytes::copy_from_slice(&payload[2..]);
 
-                let _ = self.event_tx.send(GameNetworkEvent::Message {
+                let _ = event_tx.send(GameNetworkEvent::Message {
                     connection: (*uuid).into(),
                     stream: stream_id.into(),
                     data,

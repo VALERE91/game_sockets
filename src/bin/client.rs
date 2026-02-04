@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use clap::{Parser};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
-use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameSocketProtocol, GameStream, GameStreamReliability};
-use game_sockets::protocols::{GnsProtocol, QuicProtocol, TcpProtocol, UdpProtocol};
+use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
+use game_sockets::protocols::{GnsBackend, QuicBackend, TcpBackend, UdpBackend};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -35,33 +35,32 @@ fn main() -> Result<(), GameSocketError> {
 
     match args.protocol {
         TestProtocol::Udp => {
-            // Configure UDP specifics here (e.g. loss rate) if needed
-            let protocol = UdpProtocol::new();
-            let client = GamePeer::new(protocol);
+            let backend = UdpBackend::new();
+            let client = GamePeer::new(backend);
             run_benchmark(client, &args)
         },
         TestProtocol::Tcp => {
-            let protocol = TcpProtocol::new();
-            let client = GamePeer::new(protocol);
+            let backend = TcpBackend::new();
+            let client = GamePeer::new(backend);
             run_benchmark(client, &args)
         },
         TestProtocol::Quic => {
-            let protocol = QuicProtocol::new();
-            let client = GamePeer::new(protocol);
+            let backend = QuicBackend::new();
+            let client = GamePeer::new(backend);
             run_benchmark(client, &args)
         },
         TestProtocol::GNS => {
-            let protocol = GnsProtocol::new();
-            let client = GamePeer::new(protocol);
+            let backend = GnsBackend::new();
+            let client = GamePeer::new(backend);
             run_benchmark(client, &args)
         },
     }
 }
 
 // The compiler generates a specific version of this function for UDP, and another for TCP.
-fn run_benchmark<P: GameSocketProtocol>(mut client: GamePeer<P>, args: &CliArgs) -> Result<(), GameSocketError> {
+fn run_benchmark(mut client: GamePeer, args: &CliArgs) -> Result<(), GameSocketError> {
     let recorder = MetricsRecorder::new(&args.results);
-client.connect(&args.ip, args.port)?;
+    client.connect(&args.ip, args.port)?;
 
     let mut need_stop: bool = false;
 
@@ -148,8 +147,6 @@ client.connect(&args.ip, args.port)?;
 
         // Sending packets
         if let Some(conn) = server_id {
-            let now = Instant::now();
-
             // Check Duration
             if let Some(start) = benchmark_start_time {
                 if start.elapsed() >= benchmark_duration {
@@ -163,14 +160,14 @@ client.connect(&args.ip, args.port)?;
             // 60Hz Logic (Stream 1 - Unreliable)
             if now.duration_since(last_60hz_tick) >= interval_60hz {
                 let Some(ref stream) = unreliable_game_stream else { continue };
-                send_packet(&conn, &stream, &mut client, args.packet_size, &mut packet_sequences);
+                send_packet(&conn, &stream, &mut client, args.packet_size, &mut packet_sequences)?;
                 last_60hz_tick = now;
             }
 
             // 20Hz Logic (Stream 2 - Reliable)
             if now.duration_since(last_20hz_tick) >= interval_20hz {
                 let Some(ref stream) = reliable_game_stream else { continue };
-                send_packet(&conn, &stream, &mut client, args.packet_size, &mut packet_sequences);
+                send_packet(&conn, &stream, &mut client, args.packet_size, &mut packet_sequences)?;
                 last_20hz_tick = now;
             }
         } else {
@@ -187,10 +184,11 @@ client.connect(&args.ip, args.port)?;
     Ok(())
 }
 
-fn send_packet<T : GameSocketProtocol>(conn: &GameConnection, stream: &GameStream, client: &mut GamePeer<T>,
-               padding: usize, packet_sequences: &mut HashMap<GameStream, u64>) {
+fn send_packet(conn: &GameConnection, stream: &GameStream, client: &mut GamePeer,
+               padding: usize, packet_sequences: &mut HashMap<GameStream, u64>) -> Result<(), GameSocketError>{
     let packet_seq_id = packet_sequences.entry(stream.clone()).or_insert(0);
     let packet = BenchmarkPacket::new(*packet_seq_id, padding);
-    client.send(&conn, stream, packet.to_bytes());
+    client.send(&conn, stream, packet.to_bytes())?;
     *packet_seq_id += 1;
+    Ok(())
 }
