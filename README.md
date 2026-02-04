@@ -13,6 +13,21 @@ This tool simulates realistic game traffic patterns—mixing high-frequency unre
 * **QUIC:** Modern encrypted transport based on `quinn` (IETF QUIC).
 * **GNS:** Valve's **GameNetworkingSockets** (used in *Counter-Strike 2*, *Dota 2*).
 
+## Tweaks made on the Protocols
+
+### GNS
+
+On GNS we simply disabled the Nagle algorithm, which delays datagrams slightly to smooth out traffic. This allows us to measure the latency of the underlying transport layer, which is critical for gaming.
+
+### QUIC
+
+We did quite some tweaks on QUIC to improve latency and reduce jitter:
+1.  **Switch to BBR:** BBR is a modern congestion controller designed for gaming. It models the network to keep buffers empty, which improves latency and reduces jitter.
+2.  **Disable Datagram Pacing:** Standard QUIC delays datagrams slightly to smooth out traffic. We want "Fire and Forget" immediately.
+3.  **Boost Timers for fast "Lost Packet" detection:** Default initial RTT is 333ms. Set it to a realistic gaming value (e.g., 15ms). This allows QUIC to declare a packet "lost" much faster at startup.
+
+Old results (before tweaks) are available in the `benchmark_results_standard` folder.
+
 ## Traffic Pattern
 
 Unlike standard bandwidth tools (like `iperf`), this benchmark simulates a real game loop:
