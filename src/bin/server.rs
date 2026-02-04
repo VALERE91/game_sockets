@@ -71,7 +71,11 @@ fn main() -> Result<(), GameSocketError> {
             let client = GamePeer::new(protocol);
             run_benchmark(client, &args)
         },
-        TestProtocol::GNS => unimplemented!("GNS coming soon"),
+        TestProtocol::GNS => {
+            let protocol = GnsProtocol::new();
+            let client = GamePeer::new(protocol);
+            run_benchmark(client, &args)
+        },
     }
 }
 

@@ -21,3 +21,4 @@ clap = { version = "4.5", features = ["derive"] }
 quinn = { version = "0.10" }
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 rcgen = "0.11"
+game-networking-sockets = "0.1"

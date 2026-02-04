@@ -7,7 +7,7 @@ use clap::{Parser, ValueEnum};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameSocketProtocol, GameStream, GameStreamReliability};
-use game_sockets::protocols::{QuicProtocol, TcpProtocol, UdpProtocol};
+use game_sockets::protocols::{GnsProtocol, QuicProtocol, TcpProtocol, UdpProtocol};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -48,7 +48,11 @@ fn main() -> Result<(), GameSocketError> {
             let client = GamePeer::new(protocol);
             run_benchmark(client, &args)
         },
-        TestProtocol::GNS => unimplemented!("GNS coming soon"),
+        TestProtocol::GNS => {
+            let protocol = GnsProtocol::new();
+            let client = GamePeer::new(protocol);
+            run_benchmark(client, &args)
+        },
     }
 }
 
