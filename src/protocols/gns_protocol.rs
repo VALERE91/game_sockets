@@ -82,6 +82,14 @@ impl GameSocketBackend for GnsBackend {
             }
         };
 
+        match gns_global.utils().set_global_config_value(
+            ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_NagleTime,
+            GnsConfig::Int32(0) // 0 microseconds
+        ) {
+            Ok(_) => {},
+            Err(_) => error!("Failed to set Nagle Time. GNS may not function properly."),
+        }
+
         // Enable Debug Output
         gns_global.utils().enable_debug_output(
             ESteamNetworkingSocketsDebugOutputType::k_ESteamNetworkingSocketsDebugOutputType_Msg,
@@ -123,14 +131,12 @@ impl GameSocketBackend for GnsBackend {
                     BackendCommand::Send { connection, stream, data } => {
                         if let Some(conn_handle) = self.uuid_to_handle.get(&connection) {
                             if let Some(socket) = &self.socket {
-                                let mut flags = if stream.is_reliable() {
+                                let flags = if stream.is_reliable() {
                                     k_nSteamNetworkingSend_Reliable
                                 } else {
                                     k_nSteamNetworkingSend_Unreliable
                                 };
 
-                                flags |= k_nSteamNetworkingSend_NoNagle;
-                                
                                 // Framing
                                 let mut packet_buf = BytesMut::with_capacity(2 + data.len());
                                 packet_buf.put_u16(stream.stream_id);
