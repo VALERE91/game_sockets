@@ -89,8 +89,9 @@ impl GameSocketBackend for GnsBackend {
         );
 
         self.gns_global = Some(gns_global.clone());
-
+        let mut did_work;
         loop {
+            did_work = false;
             // A. Process Commands
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
@@ -122,12 +123,14 @@ impl GameSocketBackend for GnsBackend {
                     BackendCommand::Send { connection, stream, data } => {
                         if let Some(conn_handle) = self.uuid_to_handle.get(&connection) {
                             if let Some(socket) = &self.socket {
-                                let flags = if stream.is_reliable() {
+                                let mut flags = if stream.is_reliable() {
                                     k_nSteamNetworkingSend_Reliable
                                 } else {
                                     k_nSteamNetworkingSend_Unreliable
                                 };
 
+                                flags |= k_nSteamNetworkingSend_NoNagle;
+                                
                                 // Framing
                                 let mut packet_buf = BytesMut::with_capacity(2 + data.len());
                                 packet_buf.put_u16(stream.stream_id);
@@ -172,11 +175,13 @@ impl GameSocketBackend for GnsBackend {
                 // 1. Poll Events
                 socket.poll_event(|event| {
                     self.handle_event(&socket, event, &event_tx);
+                    did_work = true;
                 });
 
                 // 2. Poll Messages
                 socket.poll_messages(|message| {
                     self.handle_message(message, &event_tx);
+                    did_work = true;
                 });
 
                 // Put the socket back
@@ -184,7 +189,9 @@ impl GameSocketBackend for GnsBackend {
             }
 
             // D. Yield
-            thread::yield_now();
+            if !did_work{
+                thread::yield_now();
+            }
         }
     }
 }
