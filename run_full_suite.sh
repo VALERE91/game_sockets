@@ -60,7 +60,7 @@ run_test_case() {
         echo "  > Testing Protocol: ${PROTO^^} ..."
 
         # 1. Start Server in Background
-        $SERVER_BIN --protocol $PROTO --port 8080 > /dev/null 2>&1 &
+        $SERVER_BIN $PROTO --port 8080 > /dev/null 2>&1 &
         SERVER_PID=$!
 
         # Give server a moment to bind
@@ -68,7 +68,7 @@ run_test_case() {
 
         # 2. Run Client
         OUTPUT_FILE="$SCENARIO_DIR/${PROTO}.csv"
-        $CLIENT_BIN --protocol $PROTO \
+        $CLIENT_BIN $PROTO \
                     --ip 127.0.0.1 \
                     --port 8080 \
                     --duration $DURATION \
