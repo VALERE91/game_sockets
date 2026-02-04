@@ -286,7 +286,7 @@ impl GnsBackend {
             }
 
             // D. Yield
-            thread::sleep(Duration::from_millis(1));
+            thread::yield_now();
         }
     }
 

@@ -22,6 +22,8 @@ struct CliArgs{
     results: String,
     #[arg(long, default_value = "1000", help = "The size of the packets to send (default: 1000)")]
     packet_size: usize,
+    #[arg(long, short, default_value = "30", help = "Duration of the test in seconds (default: 30)")]
+    duration: u64
 }
 
 fn main() -> Result<(), GameSocketError> {
@@ -68,6 +70,10 @@ client.connect(&args.ip, args.port)?;
 
     let mut packet_sequences: HashMap<GameStream, u64> = HashMap::new();
 
+    // Duration Management
+    let benchmark_duration = Duration::from_secs(args.duration);
+    let mut benchmark_start_time: Option<Instant> = None;
+
     // Timers
     let mut last_60hz_tick = Instant::now();
     let mut unreliable_game_stream = Option::<GameStream>::None;
@@ -77,6 +83,8 @@ client.connect(&args.ip, args.port)?;
     let interval_60hz = Duration::from_micros(16666); // ~16.6 ms
     let interval_20hz = Duration::from_millis(50);    // 50 ms
 
+    info!("Starting benchmark for {} seconds...", args.duration);
+
     loop {
         while let Some(event) = client.poll()? {
             match event {
@@ -85,6 +93,11 @@ client.connect(&args.ip, args.port)?;
                     server_id = Some(connection);
                     client.create_stream(connection, GameStreamReliability::Unreliable)?;
                     client.create_stream(connection, GameStreamReliability::Reliable)?;
+
+                    // Start the timer now that we are connected
+                    if benchmark_start_time.is_none() {
+                        benchmark_start_time = Some(Instant::now());
+                    }
                 }
                 GameNetworkEvent::Disconnected(connection) => {
                     info!("Disconnected from server: {:?}", connection);
@@ -135,6 +148,16 @@ client.connect(&args.ip, args.port)?;
 
         // Sending packets
         if let Some(conn) = server_id {
+            let now = Instant::now();
+
+            // Check Duration
+            if let Some(start) = benchmark_start_time {
+                if start.elapsed() >= benchmark_duration {
+                    info!("Benchmark duration of {:?} reached. Stopping.", benchmark_duration);
+                    need_stop = true;
+                }
+            }
+
             let now = Instant::now();
 
             // 60Hz Logic (Stream 1 - Unreliable)
