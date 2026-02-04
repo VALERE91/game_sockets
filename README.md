@@ -18,7 +18,7 @@ This tool simulates realistic game traffic patterns—mixing high-frequency unre
 Unlike standard bandwidth tools (like `iperf`), this benchmark simulates a real game loop:
 
 1.  **60Hz Unreliable Stream:** Simulates movement/physics data (fire-and-forget).
-2.  **20Hz Reliable Stream:** Simulates RPCs, chat, and critical game state updates.
+2.  **20Hz Reliable Stream:** Simulates RPCs, and critical game state updates.
 
 ### 1. Build
 Ensure you have the Rust toolchain installed (1.70+).
