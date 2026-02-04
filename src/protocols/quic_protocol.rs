@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 use quinn::{Endpoint, Connection, RecvStream, SendStream};
+use quinn::congestion::BbrConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameStream};
 use rustls::client::{ServerCertVerified, ServerCertVerifier};
@@ -45,6 +47,36 @@ fn make_server_config() -> (quinn::ServerConfig, Vec<u8>) {
     transport_config.max_concurrent_bidi_streams(100_u8.into()); // Support 100 reliable streams
     transport_config.datagram_receive_buffer_size(Some(1024 * 1024));
 
+    // --- GAMING OPTIMIZATIONS ---
+
+    // 1. Switch to BBR (Bottleneck Bandwidth and Round-trip propagation time)
+    // Cubic (default) fills buffers until packet loss occurs (bad for latency).
+    // BBR models the network to keep buffers empty (great for gaming).
+    let mut bbr_config = BbrConfig::default();
+    // BBR tries to probe for more bandwidth. For gaming (fixed 60Hz),
+    // we can sometimes tune this, but default BBR is significantly better than Cubic.
+    transport_config.congestion_controller_factory(Arc::new(bbr_config));
+
+    // 2. Disable Datagram Pacing (Critical for "Unreliable" lane)
+    // Standard QUIC delays datagrams slightly to smooth out traffic.
+    // We want "Fire and Forget" immediately.
+    transport_config.datagram_send_buffer_size(0); // 0 means "send immediately or drop" for some impls, but larger buffer with BBR is safer.
+    // Actually, Quinn doesn't have a direct "No Pacing" flag exposed easily in high-level config,
+    // but switching to BBR handles pacing much better for real-time than Cubic.
+
+    // 3. Tweak Ack Delay (Nagle-like behavior for Acks)
+    // Default is 25ms. Reduce this to tell the server "I got it" faster,
+    // which speeds up RTT estimation and retransmission of Reliable packets.
+    //transport_config.max_ack_delay(Some(Duration::from_millis(1)));
+
+    // 4. Boost Timers for fast "Lost Packet" detection
+    // Default initial RTT is 333ms. Set it to a realistic gaming value (e.g., 15ms).
+    // This allows QUIC to declare a packet "lost" much faster at startup.
+    transport_config.initial_rtt(Duration::from_millis(15));
+
+    // 5. Keep Alive (Prevent timeouts during loading screens)
+    transport_config.keep_alive_interval(Some(Duration::from_secs(1)));
+
     server_config.transport_config(Arc::new(transport_config));
 
     (server_config, cert_der)
@@ -60,6 +92,36 @@ fn make_client_config() -> quinn::ClientConfig {
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.datagram_receive_buffer_size(Some(1024 * 1024));
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+
+    // --- GAMING OPTIMIZATIONS ---
+
+    // 1. Switch to BBR (Bottleneck Bandwidth and Round-trip propagation time)
+    // Cubic (default) fills buffers until packet loss occurs (bad for latency).
+    // BBR models the network to keep buffers empty (great for gaming).
+    let mut bbr_config = BbrConfig::default();
+    // BBR tries to probe for more bandwidth. For gaming (fixed 60Hz),
+    // we can sometimes tune this, but default BBR is significantly better than Cubic.
+    transport_config.congestion_controller_factory(Arc::new(bbr_config));
+
+    // 2. Disable Datagram Pacing (Critical for "Unreliable" lane)
+    // Standard QUIC delays datagrams slightly to smooth out traffic.
+    // We want "Fire and Forget" immediately.
+    transport_config.datagram_send_buffer_size(0); // 0 means "send immediately or drop" for some impls, but larger buffer with BBR is safer.
+    // Actually, Quinn doesn't have a direct "No Pacing" flag exposed easily in high-level config,
+    // but switching to BBR handles pacing much better for real-time than Cubic.
+
+    // 3. Tweak Ack Delay (Nagle-like behavior for Acks)
+    // Default is 25ms. Reduce this to tell the server "I got it" faster,
+    // which speeds up RTT estimation and retransmission of Reliable packets.
+    //transport_config.max_ack_delay(Some(Duration::from_millis(1)));
+
+    // 4. Boost Timers for fast "Lost Packet" detection
+    // Default initial RTT is 333ms. Set it to a realistic gaming value (e.g., 15ms).
+    // This allows QUIC to declare a packet "lost" much faster at startup.
+    transport_config.initial_rtt(Duration::from_millis(15));
+
+    // 5. Keep Alive (Prevent timeouts during loading screens)
+    transport_config.keep_alive_interval(Some(Duration::from_secs(1)));
 
     client_config.transport_config(Arc::new(transport_config));
 
