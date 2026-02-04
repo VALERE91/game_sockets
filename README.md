@@ -72,3 +72,7 @@ Latency (RTT):
 - Dependencies (GNS): Building the Valve GNS wrapper requires C++ build tools:
     - Debian/Ubuntu: `sudo apt install cmake clang libssl-dev libprotobuf-dev protobuf-compiler`
     - macOS: `brew install cmake protobuf llvm`
+
+## License
+
+MIT
