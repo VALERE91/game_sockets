@@ -8,8 +8,10 @@ use uuid::Uuid;
 use quinn::{Endpoint, Connection, RecvStream, SendStream};
 use quinn::congestion::BbrConfig;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameStream};
+use crate::{BackendCommand, GameNetworkEvent, GameSocketBackend, GameSocketError, GameStream};
 use rustls::client::{ServerCertVerified, ServerCertVerifier};
+use tracing::error;
+use tracing::log::{debug, log};
 
 struct SkipServerVerification;
 
@@ -49,32 +51,20 @@ fn make_server_config() -> (quinn::ServerConfig, Vec<u8>) {
 
     // --- GAMING OPTIMIZATIONS ---
 
-    // 1. Switch to BBR (Bottleneck Bandwidth and Round-trip propagation time)
+    // Switch to BBR (Bottleneck Bandwidth and Round-trip propagation time)
     // Cubic (default) fills buffers until packet loss occurs (bad for latency).
     // BBR models the network to keep buffers empty (great for gaming).
-    let mut bbr_config = BbrConfig::default();
-    // BBR tries to probe for more bandwidth. For gaming (fixed 60Hz),
-    // we can sometimes tune this, but default BBR is significantly better than Cubic.
+    let bbr_config = BbrConfig::default();
     transport_config.congestion_controller_factory(Arc::new(bbr_config));
 
-    // 2. Disable Datagram Pacing (Critical for "Unreliable" lane)
-    // Standard QUIC delays datagrams slightly to smooth out traffic.
-    // We want "Fire and Forget" immediately.
+    // Disable Datagram Pacing (Critical for "Unreliable" lane)
     transport_config.datagram_send_buffer_size(0); // 0 means "send immediately or drop" for some impls, but larger buffer with BBR is safer.
-    // Actually, Quinn doesn't have a direct "No Pacing" flag exposed easily in high-level config,
-    // but switching to BBR handles pacing much better for real-time than Cubic.
 
-    // 3. Tweak Ack Delay (Nagle-like behavior for Acks)
-    // Default is 25ms. Reduce this to tell the server "I got it" faster,
-    // which speeds up RTT estimation and retransmission of Reliable packets.
-    //transport_config.max_ack_delay(Some(Duration::from_millis(1)));
-
-    // 4. Boost Timers for fast "Lost Packet" detection
+    // Boost Timers for fast "Lost Packet" detection
     // Default initial RTT is 333ms. Set it to a realistic gaming value (e.g., 15ms).
-    // This allows QUIC to declare a packet "lost" much faster at startup.
     transport_config.initial_rtt(Duration::from_millis(15));
 
-    // 5. Keep Alive (Prevent timeouts during loading screens)
+    // Keep Alive (Prevent timeouts during loading screens)
     transport_config.keep_alive_interval(Some(Duration::from_secs(1)));
 
     server_config.transport_config(Arc::new(transport_config));
@@ -93,34 +83,10 @@ fn make_client_config() -> quinn::ClientConfig {
     transport_config.datagram_receive_buffer_size(Some(1024 * 1024));
     transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
 
-    // --- GAMING OPTIMIZATIONS ---
-
-    // 1. Switch to BBR (Bottleneck Bandwidth and Round-trip propagation time)
-    // Cubic (default) fills buffers until packet loss occurs (bad for latency).
-    // BBR models the network to keep buffers empty (great for gaming).
-    let mut bbr_config = BbrConfig::default();
-    // BBR tries to probe for more bandwidth. For gaming (fixed 60Hz),
-    // we can sometimes tune this, but default BBR is significantly better than Cubic.
+    let bbr_config = BbrConfig::default();
     transport_config.congestion_controller_factory(Arc::new(bbr_config));
-
-    // 2. Disable Datagram Pacing (Critical for "Unreliable" lane)
-    // Standard QUIC delays datagrams slightly to smooth out traffic.
-    // We want "Fire and Forget" immediately.
-    transport_config.datagram_send_buffer_size(0); // 0 means "send immediately or drop" for some impls, but larger buffer with BBR is safer.
-    // Actually, Quinn doesn't have a direct "No Pacing" flag exposed easily in high-level config,
-    // but switching to BBR handles pacing much better for real-time than Cubic.
-
-    // 3. Tweak Ack Delay (Nagle-like behavior for Acks)
-    // Default is 25ms. Reduce this to tell the server "I got it" faster,
-    // which speeds up RTT estimation and retransmission of Reliable packets.
-    //transport_config.max_ack_delay(Some(Duration::from_millis(1)));
-
-    // 4. Boost Timers for fast "Lost Packet" detection
-    // Default initial RTT is 333ms. Set it to a realistic gaming value (e.g., 15ms).
-    // This allows QUIC to declare a packet "lost" much faster at startup.
+    transport_config.datagram_send_buffer_size(0);
     transport_config.initial_rtt(Duration::from_millis(15));
-
-    // 5. Keep Alive (Prevent timeouts during loading screens)
     transport_config.keep_alive_interval(Some(Duration::from_secs(1)));
 
     client_config.transport_config(Arc::new(transport_config));
@@ -186,13 +152,11 @@ impl GameSocketBackend for QuicBackend {
                             BackendCommand::Send { connection, stream, data } => {
                                 if let Some(conn) = self.connections.get(&connection) {
                                     if stream.is_reliable() {
-                                        // LAZY STREAM OPENING:
-                                        // If we don't have a stream for this ID, open a NEW one.
-                                        // This works for Server->Client replies because the Client is listening for new streams.
                                         let key = (connection, stream.stream_id);
                                         let send_stream = if let Some(s) = self.send_streams.get_mut(&key) {
                                             s
                                         } else {
+                                            debug!("No stream found for {:?}. Performing lazy creation.", stream.stream_id);
                                             let mut s = conn.open_bi().await.unwrap();
                                             let _ = s.0.write_u16(stream.stream_id).await;
                                             self.send_streams.insert(key, s);
@@ -202,12 +166,30 @@ impl GameSocketBackend for QuicBackend {
                                         let mut frame = BytesMut::with_capacity(4 + data.len());
                                         frame.put_u32(data.len() as u32);
                                         frame.put(data);
-                                        let _ = send_stream.0.write_all(&frame).await;
+                                        match send_stream.0.write_all(&frame).await {
+                                            Ok(_) => (),
+                                            Err(e)=> {
+                                                let _ = event_tx.send(GameNetworkEvent::Error {
+                                                    connection: connection.into(),
+                                                    inner: GameSocketError::SendFailed{ inner_msg: e.to_string()}
+                                                });
+                                                error!("Error sending packet: {:?}", e)
+                                            }
+                                        }
                                     } else {
                                         let mut packet = BytesMut::with_capacity(2 + data.len());
                                         packet.put_u16(stream.stream_id);
                                         packet.put(data);
-                                        let _ = conn.send_datagram(packet.freeze());
+                                        match conn.send_datagram(packet.freeze()) {
+                                            Ok(_) => (),
+                                            Err(e)=> {
+                                                let _ = event_tx.send(GameNetworkEvent::Error {
+                                                    connection: connection.into(),
+                                                    inner: GameSocketError::SendFailed{ inner_msg: e.to_string()}
+                                                });
+                                                error!("Error sending packet: {:?}", e)
+                                            }
+                                        }
                                     }
                                 }
                             }

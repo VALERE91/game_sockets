@@ -76,6 +76,8 @@ pub enum GameSocketError {
     ConnectionError,
     #[error("Unable to bind socket.")]
     BindError(#[from] std::io::Error),
+    #[error("Error sending a packet : {inner_msg}.")]
+    SendFailed{ inner_msg: String}
 }
 
 #[derive(Debug)]
