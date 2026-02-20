@@ -93,10 +93,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let stream_records = streams.get(&stream_id).unwrap();
 
         // Calculate Sent/Lost based on sequence gaps
-        let min_id = stream_records.iter().map(|r| r.packet_id).min().unwrap_or(0);
         let max_id = stream_records.iter().map(|r| r.packet_id).max().unwrap_or(0);
         let received = stream_records.len() as u64;
-        let sent = if received > 0 { max_id - min_id + 1 } else { 0 };
+        let sent = if received > 0 { max_id + 1 } else { 0 };
         let lost = sent.saturating_sub(received);
 
         global_sent += sent;
