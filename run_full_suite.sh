@@ -25,7 +25,7 @@ fi
 # Check for binaries
 if [ ! -f "$SERVER_BIN" ] || [ ! -f "$CLIENT_BIN" ]; then
     echo "Binaries not found. Building project..."
-    cargo build --release
+    RUSTFLAGS="-C target-cpu=native" cargo build --release
     if [ $? -ne 0 ]; then
         echo "Build failed."
         exit 1

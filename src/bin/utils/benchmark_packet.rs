@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::Cursor;
+use std::sync::OnceLock;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crc32fast::Hasher;
 use rand::RngCore;
@@ -14,14 +15,21 @@ const HEADER_SIZE: usize = 20;
 pub struct BenchmarkPacket {
     pub id: u64,
     pub timestamp: u64,
-    pub payload: Vec<u8>,
+    pub payload: Bytes,
 }
+
+static RANDOM_ENTROPY: OnceLock<Bytes> = OnceLock::new();
 
 impl BenchmarkPacket {
     pub fn new(id: u64, size: usize) -> Self {
         // Generate random payload
-        let mut payload = vec![0u8; size];
-        rand::rng().fill_bytes(&mut payload);
+        let entropy_pool = RANDOM_ENTROPY.get_or_init(|| {
+            let mut data = vec![0u8; 1024 * 1024];
+            rand::rng().fill_bytes(&mut data);
+            Bytes::from(data)
+        });
+
+        let payload = entropy_pool.slice(0..size);
 
         // Current time in micros
         let timestamp = SystemTime::now()
@@ -56,20 +64,17 @@ impl BenchmarkPacket {
 
     /// Parses bytes back into a BenchmarkPacket and verifies the CRC.
     /// Returns None if the CRC fails or data is too short.
-    pub fn from_bytes(data: Bytes) -> Option<Self> {
+    pub fn from_bytes(mut data: Bytes) -> Option<Self> {
         if data.len() < HEADER_SIZE {
             return None;
         }
 
-        let mut cursor = Cursor::new(&data);
-        let id = cursor.get_u64();
-        let timestamp = cursor.get_u64();
-        let checksum = cursor.get_u32();
+        let id = data.get_u64();
+        let timestamp = data.get_u64();
+        let checksum = data.get_u32();
 
         // The remaining bytes are the payload
-        let payload_len = data.len() - HEADER_SIZE;
-        let mut payload = vec![0u8; payload_len];
-        cursor.copy_to_slice(&mut payload);
+        let payload = data;
 
         // Validate CRC
         let mut hasher = Hasher::new();
