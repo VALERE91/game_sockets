@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -12,7 +13,8 @@ const HEADER_SIZE: usize = 18; // 16 bytes (UUID) + 2 bytes (StreamID)
 
 pub struct UdpBackend {
     socket: Option<Arc<UdpSocket>>,
-    connections: std::collections::HashMap<Uuid, SocketAddr>,
+    connections: HashMap<Uuid, SocketAddr>,
+    known_streams: HashMap<Uuid, Vec<u16>>,
 }
 
 impl GameSocketBackend for UdpBackend {
@@ -54,7 +56,8 @@ impl UdpBackend {
     pub fn new() -> Self {
         Self {
             socket: None,
-            connections: std::collections::HashMap::new(),
+            connections: HashMap::new(),
+            known_streams: HashMap::new(),
         }
     }
 
@@ -120,6 +123,15 @@ impl UdpBackend {
                     entry.insert(addr);
                 }
             }
+        }
+
+        let streams = self.known_streams.entry(incoming_uuid).or_default();
+        if !streams.contains(&stream_id) {
+            streams.push(stream_id);
+            let _ = event_tx.send(GameNetworkEvent::StreamCreated(
+                incoming_uuid.into(),
+                stream_id.into()
+            ));
         }
 
         // Dispatch Message

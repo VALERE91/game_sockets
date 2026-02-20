@@ -161,14 +161,14 @@ fn run_benchmark(mut client: GamePeer, args: &CliArgs) -> Result<(), GameSocketE
             if now.duration_since(last_60hz_tick) >= interval_60hz {
                 let Some(ref stream) = unreliable_game_stream else { continue };
                 send_packet(&conn, &stream, &mut client, args.packet_size, &mut packet_sequences)?;
-                last_60hz_tick = now;
+                last_60hz_tick += interval_60hz;
             }
 
             // 20Hz Logic (Stream 2 - Reliable)
             if now.duration_since(last_20hz_tick) >= interval_20hz {
                 let Some(ref stream) = reliable_game_stream else { continue };
                 send_packet(&conn, &stream, &mut client, args.packet_size, &mut packet_sequences)?;
-                last_20hz_tick = now;
+                last_20hz_tick += interval_20hz;
             }
         } else {
             debug!("Not connected to server");
@@ -177,7 +177,7 @@ fn run_benchmark(mut client: GamePeer, args: &CliArgs) -> Result<(), GameSocketE
         if need_stop {
             break;
         }
-        std::thread::yield_now();
+        std::hint::spin_loop();
     }
 
     info!("Finished");

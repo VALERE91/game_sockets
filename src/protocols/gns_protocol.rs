@@ -69,6 +69,8 @@ pub struct GnsBackend {
 
     handle_to_uuid: HashMap<GnsConnection, Uuid>,
     uuid_to_handle: HashMap<Uuid, GnsConnection>,
+
+    known_streams: HashMap<Uuid, Vec<u16>>
 }
 
 impl GameSocketBackend for GnsBackend {
@@ -208,7 +210,8 @@ impl GnsBackend {
             gns_global: None,
             socket: None,
             handle_to_uuid: HashMap::new(),
-            uuid_to_handle: HashMap::new()
+            uuid_to_handle: HashMap::new(),
+            known_streams: HashMap::new(),
         }
     }
 
@@ -268,6 +271,7 @@ impl GnsBackend {
             (_, ESteamNetworkingConnectionState::k_ESteamNetworkingConnectionState_ProblemDetectedLocally) => {
                 if let Some(uuid) = self.handle_to_uuid.remove(&conn) {
                     self.uuid_to_handle.remove(&uuid);
+                    self.known_streams.remove(&uuid);
                     let _ = event_tx.send(GameNetworkEvent::Disconnected(uuid.into()));
                     info!("GNS Disconnected: {:?}", uuid);
                 }
@@ -286,6 +290,16 @@ impl GnsBackend {
             if payload.len() >= 2 {
                 // De-Frame
                 let stream_id = u16::from_be_bytes([payload[0], payload[1]]);
+
+                let streams = self.known_streams.entry(*uuid).or_default();
+                if !streams.contains(&stream_id) {
+                    streams.push(stream_id);
+                    let _ = event_tx.send(GameNetworkEvent::StreamCreated(
+                        (*uuid).into(),
+                        stream_id.into()
+                    ));
+                }
+                
                 let data = Bytes::copy_from_slice(&payload[2..]);
 
                 let _ = event_tx.send(GameNetworkEvent::Message {
