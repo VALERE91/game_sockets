@@ -1,5 +1,4 @@
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::io::Cursor;
 use std::sync::OnceLock;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use crc32fast::Hasher;
