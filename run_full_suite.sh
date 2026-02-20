@@ -56,11 +56,16 @@ run_test_case() {
     SCENARIO_DIR="$RESULTS_DIR/$SCENARIO_NAME"
     mkdir -p "$SCENARIO_DIR"
 
+    # Hardware Isolation Configuration
+    SERVER_CORE=2
+    CLIENT_CORE=3
+    CURRENT_PORT=8000 # Start port
+
     for PROTO in "${PROTOCOLS[@]}"; do
         echo "  > Testing Protocol: ${PROTO^^} ..."
 
         # 1. Start Server in Background
-        $SERVER_BIN $PROTO --port 8080 > /dev/null 2>&1 &
+        $SERVER_BIN $PROTO --port $CURRENT_PORT > /dev/null 2>&1 &
         SERVER_PID=$!
 
         # Give server a moment to bind
@@ -70,7 +75,7 @@ run_test_case() {
         OUTPUT_FILE="$SCENARIO_DIR/${PROTO}.csv"
         $CLIENT_BIN $PROTO \
                     --ip 127.0.0.1 \
-                    --port 8080 \
+                    --port $CURRENT_PORT \
                     --duration $DURATION \
                     --results "$OUTPUT_FILE" > /dev/null
 
@@ -80,6 +85,9 @@ run_test_case() {
 
         echo "    Done. Results: $OUTPUT_FILE"
         sleep 1 # Cool down
+
+        # Increment port to prevent TCP TIME_WAIT collisions
+        CURRENT_PORT=$((CURRENT_PORT + 1))
     done
     echo ""
 }
