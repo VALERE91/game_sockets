@@ -253,13 +253,18 @@ impl QuicBackend {
         
         // Datagram Reader
         tokio::spawn(async move {
+            // Local cache to deduplicate stream registrations
+            let mut known_streams = Vec::new();
             while let Ok(bytes) = conn_clone.read_datagram().await {
                 if bytes.len() < 2 {
                     continue;
                 }
                 let mut b = bytes;
                 let stream_id = b.get_u16();
-                let _ = stream_reg_tx_clone.send((uuid, stream_id.into(), None));
+                if !known_streams.contains(&stream_id) {
+                    known_streams.push(stream_id);
+                    let _ = stream_reg_tx_clone.send((uuid, stream_id.into(), None));
+                }
                 let _ = event_tx_clone.send(GameNetworkEvent::Message {
                     connection: uuid.into(),
                     stream: stream_id.into(),
