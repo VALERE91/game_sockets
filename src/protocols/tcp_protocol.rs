@@ -35,6 +35,10 @@ impl GameSocketBackend for TcpBackend {
                                 // Spawn Listener Task
                                 tokio::spawn(async move {
                                     while let Ok((socket, _)) = listener.accept().await {
+                                        if let Err(e) = socket.set_nodelay(true) {
+                                            tracing::warn!("Failed to set TCP_NODELAY on accepted socket: {}", e);
+                                        }
+                                        
                                         let uuid = Uuid::new_v4();
                                         // Notify Game Thread
                                         let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
@@ -50,6 +54,10 @@ impl GameSocketBackend for TcpBackend {
                             }
                             BackendCommand::Connect { addr, port } => {
                                 if let Ok(socket) = TcpStream::connect(format!("{}:{}", addr, port)).await {
+                                    if let Err(e) = socket.set_nodelay(true) {
+                                        tracing::warn!("Failed to set TCP_NODELAY on connected socket: {}", e);
+                                    }
+                                    
                                     let uuid = Uuid::new_v4();
                                     let _ = event_tx.send(GameNetworkEvent::Connected(uuid.into()));
 
@@ -106,6 +114,7 @@ impl TcpBackend {
             // Apply Length-Delimited Framing
             // This transforms the raw stream into "packets" based on a u32 length header.
             let mut framed = Framed::new(socket, LengthDelimitedCodec::new());
+            let mut known_streams: Vec<u16> = Vec::new();
 
             loop {
                 tokio::select! {
@@ -115,7 +124,16 @@ impl TcpBackend {
                             Some(Ok(mut bytes)) => {
                                 // Protocol: [StreamID: u16] [Payload...]
                                 if bytes.len() >= 2 {
-                                    let stream_id = bytes.get_u16(); // Consumes first 2 bytes
+                                    let stream_id = bytes.get_u16();
+
+                                    if !known_streams.contains(&stream_id) {
+                                        known_streams.push(stream_id);
+                                        let _ = event_tx.send(GameNetworkEvent::StreamCreated(
+                                            uuid.into(),
+                                            stream_id.into()
+                                        ));
+                                    }
+
                                     let payload = bytes.freeze();
 
                                     let _ = event_tx.send(GameNetworkEvent::Message {
