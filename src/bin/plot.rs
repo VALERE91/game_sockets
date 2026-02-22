@@ -33,11 +33,11 @@ const QUIC_NAME: &str = "QUIC";
 const GNS_NAME: &str = "GNS";
 
 // Helper to load a specific file
-fn load_latency(path: &str) -> (f64, f64) {
+fn load_latency(path: &str) -> f64 {
     let file = File::open(path).unwrap_or_else(|_| panic!("Failed to open {}", path));
     let reader = BufReader::new(file);
     let data: BenchmarkJson = serde_json::from_reader(reader).expect("JSON Parse Error");
-    (data.global.latency.avg_us / 1000.0, data.global.latency.p99_us / 1000.0)
+    data.global.latency.p99_us / 1000.0
 }
 
 fn load_loss(path: &str) -> Vec<(f64, &str, String)> {
@@ -139,7 +139,7 @@ fn draw_line_chart(path: &str,
         let series_data: Vec<(f64, f64)> = data.iter()
             .filter(|p| p.1.eq_ignore_ascii_case(name))
             .map(|p| {
-                let (_avg, p99) = load_latency(p.2.as_str());
+                let p99 = load_latency(p.2.as_str());
                 (p.0, p99)
             })
             .collect();
