@@ -65,7 +65,7 @@ run_test_case() {
         echo "  > Testing Protocol: ${PROTO^^} ..."
 
         # 1. Start Server in Background
-        taskset -c $SERVER_CORE $SERVER_BIN $PROTO --port $CURRENT_PORT > /dev/null 2>&1 &
+        $SERVER_BIN $PROTO --port $CURRENT_PORT > /dev/null 2>&1 &
         SERVER_PID=$!
 
         # Give server a moment to bind
@@ -73,7 +73,7 @@ run_test_case() {
 
         # 2. Run Client
         OUTPUT_FILE="$SCENARIO_DIR/${PROTO}.csv"
-        taskset -c $CLIENT_CORE $CLIENT_BIN $PROTO \
+        $CLIENT_BIN $PROTO \
                     --ip 127.0.0.1 \
                     --port $CURRENT_PORT \
                     --duration $DURATION \
