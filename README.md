@@ -15,6 +15,10 @@ This tool simulates realistic game traffic patterns—mixing high-frequency unre
 
 ## Tweaks made on the Protocols
 
+### TCP
+
+On TCP we simply disabled the Nagle algorithm with the TCP_NODELAY option.
+
 ### GNS
 
 On GNS we simply disabled the Nagle algorithm, which delays datagrams slightly to smooth out traffic. This allows us to measure the latency of the underlying transport layer, which is critical for gaming.
