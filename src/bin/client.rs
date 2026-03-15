@@ -2,9 +2,8 @@ mod utils;
 
 use std::collections::HashMap;
 use utils::*;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use clap::{Parser};
-use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
 use game_sockets::protocols::{GnsBackend, QuicBackend, TcpBackend, UdpBackend};
@@ -23,7 +22,9 @@ struct CliArgs{
     #[arg(long, default_value = "1000", help = "The size of the packets to send (default: 1000)")]
     packet_size: usize,
     #[arg(long, short, default_value = "30", help = "Duration of the test in seconds (default: 30)")]
-    duration: u64
+    duration: u64,
+    #[arg(long, default_value = "0", help = "Warmup time in seconds (default: 0)")]
+    warmup: u64,
 }
 
 fn main() -> Result<(), GameSocketError> {
@@ -114,13 +115,17 @@ fn run_benchmark(mut client: GamePeer, args: &CliArgs) -> Result<(), GameSocketE
                         debug!("Packet [{}] RTT: {} µs | Payload: {} bytes",
                                  packet.id, rtt_micros, packet.payload.len());
 
-                        recorder.record(BenchmarkRecord {
-                            packet_id: packet.id,
-                            stream_id: stream.stream_id,
-                            rtt_us: rtt_micros,
-                            payload_size: packet.payload.len(),
-                            recv_timestamp: now_micros,
-                        });
+                        if benchmark_start_time.is_some() &&
+                            Instant::now().duration_since(benchmark_start_time.expect("Already checked")).as_secs() > args.warmup
+                        {
+                            recorder.record(BenchmarkRecord {
+                                packet_id: packet.id,
+                                stream_id: stream.stream_id,
+                                rtt_us: rtt_micros,
+                                payload_size: packet.payload.len(),
+                                recv_timestamp: now_micros,
+                            });
+                        }
                     }  else {
                         warn!("Received invalid packet from server: {:?}", connection);
                     }
