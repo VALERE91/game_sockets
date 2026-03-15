@@ -4,73 +4,215 @@ A high-performance, asynchronous benchmarking suite written in Rust designed to 
 
 This tool simulates realistic game traffic patterns—mixing high-frequency unreliable data (e.g., player movement) with lower-frequency reliable data (e.g., game state)—to measure latency, jitter, and packet loss under various network conditions.
 
-> **Note:** For a deep dive into the methodology, performance analysis, and results, please refer to the accompanying scientific paper: *[Insert Paper Title Here]* (Link pending).
+> **Note:** For a deep dive into the methodology, performance analysis, and results, please refer to the accompanying scientific paper: *[Temp Paper Title]* (Link pending).
 
 ## Supported Protocols
 
-* **UDP:** Raw datagrams.
-* **TCP:** Standard reliable stream (for baseline comparison).
-* **QUIC:** Modern encrypted transport based on `quinn` (IETF QUIC).
-* **GNS:** Valve's **GameNetworkingSockets** (used in *Counter-Strike 2*, *Dota 2*).
+| Protocol | Description | Library |
+|----------|-------------|---------|
+| **UDP** | Raw datagrams (baseline, no reliability) | `std::net::UdpSocket` |
+| **TCP** | Reliable stream (baseline comparison) | `std::net::TcpStream` |
+| **QUIC** | Modern encrypted transport (IETF QUIC) | [`quinn`](https://github.com/quinn-rs/quinn) |
+| **GNS** | Valve's GameNetworkingSockets (*Counter-Strike 2*, *Dota 2*) | [`game-networking-sockets-sys`](https://crates.io/crates/game-networking-sockets-sys) |
 
-## Tweaks made on the Protocols
+## Protocol Tweaks
 
 ### TCP
 
-On TCP we simply disabled the Nagle algorithm with the TCP_NODELAY option.
+Nagle's algorithm is disabled via `TCP_NODELAY` to prevent send-side coalescing, ensuring each game tick produces an immediate packet.
 
 ### GNS
 
-On GNS we simply disabled the Nagle algorithm, which delays datagrams slightly to smooth out traffic. This allows us to measure the latency of the underlying transport layer, which is critical for gaming.
+Nagle's algorithm is disabled to measure the latency of the underlying transport layer without artificial batching delay.
 
 ### QUIC
 
-We did quite some tweaks on QUIC to improve latency and reduce jitter:
-1.  **Switch to BBR:** BBR is a modern congestion controller designed for gaming. It models the network to keep buffers empty, which improves latency and reduces jitter.
-2.  **Disable Datagram Pacing:** Standard QUIC delays datagrams slightly to smooth out traffic. We want "Fire and Forget" immediately.
-3.  **Boost Timers for fast "Lost Packet" detection:** Default initial RTT is 333ms. Set it to a realistic gaming value (e.g., 15ms). This allows QUIC to declare a packet "lost" much faster at startup.
+Several optimizations are applied to bring QUIC closer to a gaming-friendly configuration:
 
-Old results (before tweaks) are available in the `benchmark_results_standard` folder.
+1. **BBR Congestion Control** — BBR models the network bottleneck bandwidth and RTT to keep in-flight data just below buffer capacity, reducing bufferbloat-induced latency spikes compared to the default Cubic controller.
+2. **Datagram Pacing Disabled** — Standard QUIC smooths packet transmission over time. We disable pacing for immediate "fire-and-forget" dispatch, matching what a real game server would do.
+3. **Aggressive Loss Detection** — The default initial RTT estimate (333ms) is replaced with a realistic gaming value (15ms), allowing QUIC to declare packets lost and trigger retransmission significantly faster at connection startup.
+
+> Old results (before these tweaks) are available in the `benchmark_results_standard` folder for comparison.
 
 ## Traffic Pattern
 
-Unlike standard bandwidth tools (like `iperf`), this benchmark simulates a real game loop:
+Unlike standard bandwidth tools (like `iperf3`), this benchmark simulates a real game loop with two concurrent data streams:
 
-1.  **60Hz Unreliable Stream:** Simulates movement/physics data (fire-and-forget).
-2.  **20Hz Reliable Stream:** Simulates RPCs, and critical game state updates.
+| Stream | Frequency | Reliability | Simulates |
+|--------|-----------|-------------|-----------|
+| Movement/Physics | 60 Hz | Unreliable (fire-and-forget) | Player position, velocity, input state |
+| Game State/RPC | 20 Hz | Reliable (ordered delivery) | Damage events, spawns, authoritative state |
 
-### 1. Build
-Ensure you have the Rust toolchain installed (1.70+).
+## Benchmarking Methodology
 
-```bash
-cargo build --release
+### Hardware & OS
+
+All measurements in the paper were performed on bare-metal hardware with OS-level core isolation:
+
+| Item | Value |
+|------|-------|
+| CPU | AMD Ryzen 7 3800X, 8C/8T (SMT disabled), 3.6 GHz fixed (CPB disabled) |
+| RAM | 64 GB DDR4 |
+| OS | Debian 13.4 "Trixie" (kernel 6.x) |
+| Rust | Stable toolchain (see `rust-toolchain.toml` or `rustc --version`) |
+
+### Core Isolation
+
+To minimize measurement noise, the server and client processes are pinned to **isolated CPU cores on the same CCX** (Core Complex) of the Ryzen 3800X. This eliminates scheduler interference and avoids inter-chiplet Infinity Fabric latency.
+
+**Kernel boot parameters:**
+
+```
+isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 processor.max_cstate=0 nosoftlockup amd_pstate=disable
 ```
 
-### 2. Run the Server
-Start the server in one terminal. You must specify the protocol to listen on.
+| Parameter | Purpose |
+|-----------|---------|
+| `isolcpus=2,3` | Removes cores 2–3 from the general scheduler |
+| `nohz_full=2,3` | Disables the scheduler tick on isolated cores |
+| `rcu_nocbs=2,3` | Offloads RCU callbacks to non-isolated cores |
+| `processor.max_cstate=0` | Disables CPU sleep states (eliminates wake-up latency) |
+
+**Process launch pattern:**
+
+```bash
+# Server — pinned to core 2, real-time FIFO priority
+ip netns exec ns_server taskset -c 2 chrt -f 50 ./target/release/server ...
+
+# Client — pinned to core 3, real-time FIFO priority
+ip netns exec ns_client taskset -c 3 chrt -f 50 ./target/release/client ...
+```
+
+### Network Emulation
+
+Instead of applying `tc` on loopback (which bypasses much of the kernel networking stack), we use **Linux network namespaces connected by a veth pair**. This gives `tc`/`netem` a realistic Layer 2/3 path to operate on.
+
+```
+┌─────────────────┐          veth pair          ┌─────────────────┐
+│   ns_server      │◄──────────────────────────►│   ns_client      │
+│   10.0.0.1       │      netem (symmetric)      │   10.0.0.2       │
+│   core 2         │                             │   core 3         │
+└─────────────────┘                             └─────────────────┘
+```
+
+**Setup:**
+
+```bash
+# Create namespaces and veth pair
+ip netns add ns_server && ip netns add ns_client
+ip link add veth-srv type veth peer name veth-cli
+ip link set veth-srv netns ns_server
+ip link set veth-cli netns ns_client
+
+# Assign addresses
+ip netns exec ns_server ip addr add 10.0.0.1/24 dev veth-srv
+ip netns exec ns_server ip link set veth-srv up
+ip netns exec ns_client ip addr add 10.0.0.2/24 dev veth-cli
+ip netns exec ns_client ip link set veth-cli up
+
+# Disable offloading for accurate tc behavior
+ip netns exec ns_server ethtool -K veth-srv tx off rx off tso off gso off gro off
+ip netns exec ns_client ethtool -K veth-cli tx off rx off tso off gso off gro off
+```
+
+**Applying conditions (symmetric):**
+
+```bash
+# Example: 30ms ±5ms delay each way, 0.1% loss
+ip netns exec ns_client tc qdisc add dev veth-cli root netem delay 30ms 5ms distribution normal loss 0.1%
+ip netns exec ns_server tc qdisc add dev veth-srv root netem delay 30ms 5ms distribution normal loss 0.1%
+```
+
+### Test Scenarios
+
+The benchmark suite (`run_full_suite.sh`) runs all four protocols through 10 network scenarios:
+
+| # | Scenario | Delay (each way) | Jitter | Loss | Simulates |
+|---|----------|-------------------|--------|------|-----------|
+| 01 | Baseline | 0 | 0 | 0% | Direct veth (raw transport overhead) |
+| 02 | Low latency | 10ms | ±1ms | 0% | LAN / same-region datacenter |
+| 03 | Medium latency | 30ms | ±5ms | 0% | Cross-country |
+| 04 | High latency | 50ms | ±10ms | 0% | Transatlantic |
+| 05 | Low loss | 0 | 0 | 1% | Minor congestion |
+| 06 | Medium loss | 0 | 0 | 2% | Congested link |
+| 07 | High loss | 0 | 0 | 5% | Severe congestion / bad WiFi |
+| 08 | Fiber | 5ms | ±1ms | 0% | Home fiber connection |
+| 09 | Good connection | 30ms | ±5ms | 0.1% | Typical cable/DSL |
+| 10 | Bad connection | 80ms | ±20ms | 2% | Unstable WiFi / mobile 4G |
+
+Each configuration runs **10 times × 60 seconds** (plus 10s warmup discarded) for statistical validity.
+
+### Statistical Reporting
+
+Results are reported as percentile distributions (p50, p95, p99), not just means, since tail latency matters more than average latency for game networking. Each scenario produces per-protocol CSV files that can be processed with the included `stats` tool.
+
+## Quick Start
+
+### 1. Prerequisites
+
+**Rust:** Stable toolchain (1.70+).
+
+**System dependencies (for GNS):**
+
+```bash
+# Debian/Ubuntu
+sudo apt install cmake clang libclang-dev libssl-dev libprotobuf-dev protobuf-compiler pkg-config libfontconfig1-dev
+
+# macOS
+brew install cmake protobuf llvm
+```
+
+### 2. Build
+
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
+> The `target-cpu=native` flag enables CPU-specific optimizations. Omit it if building for a different machine.
+
+### 3. Run Manually
+
+**Server** (in one terminal):
 
 ```bash
 # Options: udp, tcp, quic, gns
 ./target/release/server --protocol gns --port 8080
 ```
 
-### 3. Run the Client
-Start the client in another terminal (or another machine). This example runs a 30-second benchmark connecting to localhost.
+**Client** (in another terminal or machine):
 
 ```bash
 ./target/release/client --protocol gns --ip 127.0.0.1 --port 8080 --duration 30 --results gns_test.csv
 ```
 
-### 4. Analyze the Results
-The client generates a CSV file containing raw timestamps for every packet. Use the included stats tool to generate a summary.
+### 4. Run the Full Benchmark Suite
+
+The automated suite handles namespace setup, core pinning, netem configuration, and multiple runs:
+
+```bash
+# Build first (as your normal user)
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+
+# Run the suite (requires root for tc, namespaces, chrt)
+sudo ./run_full_suite.sh
+```
+
+Options:
+
+```bash
+sudo ./run_full_suite.sh --runs 10 --duration 60 --skip-internet
+```
+
+### 5. Analyze Results
 
 ```bash
 ./target/release/stats gns_test.csv
 ```
 
-Output Example:
+Example output:
 
-```txt
+```
 STATS FOR: STREAM 1 [Unreliable]
 --------------------------------------------------
 Reliability:
@@ -82,15 +224,22 @@ Latency (RTT):
   P99:                14 ms
 ```
 
-## Requirements
+## Reproducing the Paper Results
 
-- Rust: Stable toolchain (1.70+ recommended).
+For full reproducibility of the results presented in the paper:
 
-- Linux/macOS: Recommended for accurate network emulation (netem/tc).
-
-- Dependencies (GNS): Building the Valve GNS wrapper requires C++ build tools:
-    - Debian/Ubuntu: `sudo apt install cmake clang libssl-dev libprotobuf-dev protobuf-compiler`
-    - macOS: `brew install cmake protobuf llvm`
+1. Use bare-metal hardware (not a VM) — virtualization adds 10–50µs of unpredictable jitter
+2. Disable SMT and CPU boost in BIOS
+3. Apply kernel boot parameters listed above, then reboot
+4. Run the preparation script before each benchmark session:
+   ```bash
+   sudo ./prepare_bench.sh
+   ```
+5. Run the full suite:
+   ```bash
+   sudo ./run_full_suite.sh
+   ```
+6. Results are saved in `benchmark_results/<timestamp>/` with system info captured automatically
 
 ## License
 

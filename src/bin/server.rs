@@ -80,8 +80,8 @@ fn main() -> Result<(), GameSocketError> {
 }
 
 fn run_benchmark(mut server: GamePeer, args: &CliArgs) -> Result<(), GameSocketError> {
-    server.listen(args.port)?;
-    info!("Server started on port 8080");
+    server.listen(&args.ip, args.port)?;
+    info!("Server started on {}:{}", args.ip, args.port);
     let mut state = GlobalState::new();
 
     //Read all the server events

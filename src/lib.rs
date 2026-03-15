@@ -143,8 +143,8 @@ impl GamePeer {
             .map_err(|_| GameSocketError::ConnectionError)
     }
 
-    pub fn listen(&self, port: u16) -> Result<(), GameSocketError> {
-        self.send_cmd(BackendCommand::Bind { addr: "0.0.0.0".to_string(), port })
+    pub fn listen(&self, ip: &str, port: u16) -> Result<(), GameSocketError> {
+        self.send_cmd(BackendCommand::Bind { addr: ip.to_string(), port })
     }
 
     pub fn connect(&self, addr: &str, port: u16) -> Result<(), GameSocketError> {
