@@ -5,37 +5,50 @@
 # ==============================================================================
 # Benchmarks UDP, TCP, QUIC, and GNS under controlled network conditions.
 #
-# Changes from original:
+# Key design decisions:
 #   - Uses network namespaces + veth instead of loopback (realistic tc behavior)
-#   - Pins server/client to isolated cores 2/3 with SCHED_FIFO
+#   - Each process gets 2 isolated cores: one for the game loop, one for the
+#     async I/O runtime (Tokio). This prevents SCHED_FIFO starvation and
+#     reflects realistic multi-threaded deployment.
 #   - Multiple runs per configuration for statistical validity
 #   - Warmup period discarded from measurements
 #   - Captures system info for paper reproducibility
-#   - Automated validation of tc conditions
 #
 # PREREQUISITES:
-#   - Debian 13 with isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3
+#   - Debian 13 with: isolcpus=2,3,4,5 nohz_full=2,3,4,5 rcu_nocbs=2,3,4,5
 #   - SMT disabled in BIOS, CPB disabled
 #   - Run prepare_bench.sh first
-#   - Run setup_netns.sh first (or this script will do it)
+#   - Build first: RUSTFLAGS="-C target-cpu=native" cargo build --release
 #
-# USAGE: sudo ./run_full_suite.sh [--runs N] [--duration N] [--skip-internet]
+# USAGE: sudo ./run_full_suite.sh [--runs N] [--duration N] [--warmup N]
 # ==============================================================================
 
 set -euo pipefail
 
 # --- Configuration ---
-DURATION=60                     # Duration of each test in seconds
+DURATION=60                     # Duration of measured data in seconds
 WARMUP=10                       # Warmup seconds (discarded by client)
 RUNS=10                         # Runs per configuration
 PROTOCOLS=("udp" "tcp" "quic" "gns")
-RESULTS_DIR="benchmark_results/$(date +%Y%m%d_%H%M%S)"
-SERVER_BIN="./target/release/server"
-CLIENT_BIN="./target/release/client"
+RESULTS_DIR="../benchmark_results/$(date +%Y%m%d_%H%M%S)"
+SERVER_BIN="../target/release/server"
+CLIENT_BIN="../target/release/client"
 
-# Hardware isolation (Ryzen 7 3800X — cores 2,3 on same CCX)
-SERVER_CORE=2
-CLIENT_CORE=3
+# Hardware isolation (Ryzen 7 3800X, SMT off, 8 physical cores)
+# Each process needs 2 cores: main thread + Tokio async runtime thread.
+# Without this, SCHED_FIFO on a single core starves the runtime thread.
+#
+# Core layout (verify with lscpu -e after boot):
+#   CCX 0: cores 0,1,2,3  (share 16MB L3)
+#   CCX 1: cores 4,5,6,7  (share 16MB L3)
+#
+#   Core 0    → OS, IRQs, housekeeping
+#   Core 1    → Unused (buffer)
+#   Cores 2,4 → Server (game loop on 2, Tokio on 4)
+#   Cores 3,5 → Client (game loop on 3, Tokio on 5)
+#   Cores 6,7 → Unused
+SERVER_CORES="2,4"
+CLIENT_CORES="3,5"
 RT_PRIORITY=50
 
 # Network namespace config
@@ -45,12 +58,11 @@ SERVER_IP="10.0.0.1"
 CLIENT_IP="10.0.0.2"
 
 # --- Parse CLI Arguments ---
-SKIP_INTERNET=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --runs)       RUNS="$2"; shift 2 ;;
         --duration)   DURATION="$2"; shift 2 ;;
-        --skip-internet) SKIP_INTERNET=true; shift ;;
+        --warmup)     WARMUP="$2"; shift 2 ;;
         *)            echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
@@ -69,8 +81,9 @@ fi
 
 # Verify isolated cores
 ISOLATED=$(cat /sys/devices/system/cpu/isolated 2>/dev/null || echo "none")
-if [[ "$ISOLATED" != *"2"* ]] || [[ "$ISOLATED" != *"3"* ]]; then
-    echo "WARNING: Cores 2,3 are not isolated (isolated=$ISOLATED)"
+if [[ "$ISOLATED" != *"2"* ]] || [[ "$ISOLATED" != *"5"* ]]; then
+    echo "WARNING: Cores 2-5 are not all isolated (isolated=$ISOLATED)"
+    echo "Expected: isolcpus=2,3,4,5"
     echo "Results will have higher variance. Continue anyway? [y/N]"
     read -r REPLY
     [[ "$REPLY" =~ ^[Yy]$ ]] || exit 1
@@ -109,7 +122,7 @@ capture_system_info() {
         echo "Duration: ${DURATION}s + ${WARMUP}s warmup"
         echo "Runs per config: $RUNS"
         echo "Protocols: ${PROTOCOLS[*]}"
-        echo "Server core: $SERVER_CORE | Client core: $CLIENT_CORE"
+        echo "Server cores: $SERVER_CORES | Client cores: $CLIENT_CORES"
         echo "RT priority: SCHED_FIFO $RT_PRIORITY"
     } > "$INFO_FILE"
     echo "System info saved to $INFO_FILE"
@@ -162,8 +175,6 @@ setup_namespaces() {
 # TC/Netem Helpers
 # ==============================================================================
 
-# Apply symmetric netem on both sides of the veth pair
-# Args: tc netem parameters (everything after "netem")
 apply_netem() {
     local NETEM_ARGS="$*"
 
@@ -182,7 +193,6 @@ reset_netem() {
     ip netns exec "$NS_SERVER" tc qdisc del dev veth-srv root 2>/dev/null || true
 }
 
-# Validate netem with a quick ping, save results
 validate_netem() {
     local SCENARIO_DIR="$1"
     ip netns exec "$NS_CLIENT" ping -c 20 -q "$SERVER_IP" \
@@ -193,10 +203,6 @@ validate_netem() {
 # Core Test Runner
 # ==============================================================================
 
-# Runs all protocols for a given scenario, with multiple runs each
-# $1: Scenario name (directory name)
-# $2: Scenario description (for logging)
-# $3+: tc netem args (empty string for baseline)
 run_test_case() {
     local SCENARIO_NAME="$1"
     local SCENARIO_DESC="$2"
@@ -236,9 +242,9 @@ run_test_case() {
             local OUTPUT_FILE="$SCENARIO_DIR/${PROTO}_run$(printf '%02d' $RUN).csv"
             echo "    Run $RUN/$RUNS -> $(basename $OUTPUT_FILE)"
 
-            # 1. Start Server — pinned to core, RT priority, in server namespace
+            # 1. Start Server — pinned to 2 cores, RT priority, in server namespace
             ip netns exec "$NS_SERVER" \
-                taskset -c "$SERVER_CORE" \
+                taskset -c "$SERVER_CORES" \
                 chrt -f "$RT_PRIORITY" \
                 "$SERVER_BIN" "$PROTO" \
                     --port "$CURRENT_PORT" \
@@ -246,9 +252,10 @@ run_test_case() {
             local SERVER_PID=$!
             sleep 1  # Let server bind
 
-            # 2. Run Client — pinned to core, RT priority, in client namespace for Duration + Warmup
+            # 2. Run Client — pinned to 2 cores, RT priority, in client namespace
+            #    Total runtime = DURATION + WARMUP; first WARMUP seconds are discarded
             ip netns exec "$NS_CLIENT" \
-                taskset -c "$CLIENT_CORE" \
+                taskset -c "$CLIENT_CORES" \
                 chrt -f "$RT_PRIORITY" \
                 "$CLIENT_BIN" "$PROTO" \
                     --ip "$SERVER_IP" \
@@ -281,7 +288,8 @@ echo "╠═══════════════════════�
 echo "║  Protocols: UDP, TCP, QUIC, GNS                                ║"
 echo "║  Runs/config: $RUNS                                            ║"
 echo "║  Duration: ${DURATION}s + ${WARMUP}s warmup                    ║"
-echo "║  Cores: server=$SERVER_CORE client=$CLIENT_CORE (isolated)     ║"
+echo "║  Server cores: $SERVER_CORES (game loop + async I/O)           ║"
+echo "║  Client cores: $CLIENT_CORES (game loop + async I/O)           ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo ""
 
@@ -377,7 +385,7 @@ TOTAL_FILES=$(find "$RESULTS_DIR" -name "*.csv" | wc -l)
 echo "Total result files: $TOTAL_FILES"
 echo ""
 
-# Quick sanity check — verify all expected files exist
+# Quick sanity check
 EXPECTED=$((TOTAL_SCENARIOS * ${#PROTOCOLS[@]} * RUNS))
 if [ "$TOTAL_FILES" -ne "$EXPECTED" ]; then
     echo "WARNING: Expected $EXPECTED CSV files but found $TOTAL_FILES"
@@ -389,5 +397,6 @@ fi
 echo ""
 echo "Next steps:"
 echo "  1. Back up results: cp -r $RESULTS_DIR /path/to/backup/"
-echo "  2. Process results: ./target/release/stats $RESULTS_DIR"
-echo "  3. (Optional) Run internet validation on remote VPS"
+echo "  2. Aggregate: ./target/release/stats $RESULTS_DIR --all"
+echo "  3. Plot: ./target/release/plot $RESULTS_DIR"
+echo "  4. (Optional) Run internet validation on remote VPS"

@@ -4,7 +4,7 @@ A high-performance, asynchronous benchmarking suite written in Rust designed to 
 
 This tool simulates realistic game traffic patterns—mixing high-frequency unreliable data (e.g., player movement) with lower-frequency reliable data (e.g., game state)—to measure latency, jitter, and packet loss under various network conditions.
 
-> **Note:** For a deep dive into the methodology, performance analysis, and results, please refer to the accompanying scientific paper: *[Temp Paper Title]* (Link pending).
+> **Note:** For a deep dive into the methodology, performance analysis, and results, please refer to the accompanying scientific paper: *[Insert Paper Title Here]* (Link pending).
 
 ## Supported Protocols
 
@@ -56,6 +56,7 @@ All measurements in the paper were performed on bare-metal hardware with OS-leve
 | RAM | 64 GB DDR4 |
 | OS | Debian 13.4 "Trixie" (kernel 6.x) |
 | Rust | Stable toolchain (see `rust-toolchain.toml` or `rustc --version`) |
+| Isolation | `isolcpus=2,3,4,5` — 4 cores reserved (2 per process) |
 
 ### Core Isolation
 
@@ -64,24 +65,34 @@ To minimize measurement noise, the server and client processes are pinned to **i
 **Kernel boot parameters:**
 
 ```
-isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3 processor.max_cstate=0 nosoftlockup amd_pstate=disable
+isolcpus=2,3,4,5 nohz_full=2,3,4,5 rcu_nocbs=2,3,4,5 processor.max_cstate=0 nosoftlockup amd_pstate=disable
 ```
 
 | Parameter | Purpose |
 |-----------|---------|
-| `isolcpus=2,3` | Removes cores 2–3 from the general scheduler |
-| `nohz_full=2,3` | Disables the scheduler tick on isolated cores |
-| `rcu_nocbs=2,3` | Offloads RCU callbacks to non-isolated cores |
+| `isolcpus=2,3,4,5` | Removes cores 2–5 from the general scheduler |
+| `nohz_full=2,3,4,5` | Disables the scheduler tick on isolated cores |
+| `rcu_nocbs=2,3,4,5` | Offloads RCU callbacks to non-isolated cores |
 | `processor.max_cstate=0` | Disables CPU sleep states (eliminates wake-up latency) |
 
 **Process launch pattern:**
 
-```bash
-# Server — pinned to core 2, real-time FIFO priority
-ip netns exec ns_server taskset -c 2 chrt -f 50 ./target/release/server ...
+Each process is allocated **two isolated cores**: one for the application's game loop (main thread) and one for the asynchronous I/O runtime (Tokio). This prevents real-time scheduling starvation between the two threads and reflects realistic multi-threaded deployment.
 
-# Client — pinned to core 3, real-time FIFO priority
-ip netns exec ns_client taskset -c 3 chrt -f 50 ./target/release/client ...
+```
+Core 0    → OS, IRQs, housekeeping
+Core 1    → Unused (buffer)
+Cores 2,4 → Server (game loop + Tokio runtime)
+Cores 3,5 → Client (game loop + Tokio runtime)
+Cores 6,7 → Unused
+```
+
+```bash
+# Server — pinned to cores 2,4, real-time FIFO priority
+ip netns exec ns_server taskset -c 2,4 chrt -f 50 ./target/release/server ...
+
+# Client — pinned to cores 3,5, real-time FIFO priority
+ip netns exec ns_client taskset -c 3,5 chrt -f 50 ./target/release/client ...
 ```
 
 ### Network Emulation
@@ -92,7 +103,7 @@ Instead of applying `tc` on loopback (which bypasses much of the kernel networki
 ┌─────────────────┐          veth pair          ┌─────────────────┐
 │   ns_server      │◄──────────────────────────►│   ns_client      │
 │   10.0.0.1       │      netem (symmetric)      │   10.0.0.2       │
-│   core 2         │                             │   core 3         │
+│   cores 2,4      │                             │   cores 3,5      │
 └─────────────────┘                             └─────────────────┘
 ```
 
@@ -230,7 +241,7 @@ For full reproducibility of the results presented in the paper:
 
 1. Use bare-metal hardware (not a VM) — virtualization adds 10–50µs of unpredictable jitter
 2. Disable SMT and CPU boost in BIOS
-3. Apply kernel boot parameters listed above, then reboot
+3. Apply kernel boot parameters listed above (`isolcpus=2,3,4,5 ...`), then reboot
 4. Run the preparation script before each benchmark session:
    ```bash
    sudo ./prepare_bench.sh
@@ -240,6 +251,23 @@ For full reproducibility of the results presented in the paper:
    sudo ./run_full_suite.sh
    ```
 6. Results are saved in `benchmark_results/<timestamp>/` with system info captured automatically
+
+## Project Structure
+
+```
+.
+├── src/
+│   ├── server.rs          # Multi-protocol server
+│   ├── client.rs          # Benchmark client with CSV output
+│   └── stats.rs           # Statistical analysis tool
+├── scripts/               # Bash scripts
+|     ├── run_full_suite.sh      # Automated benchmark suite
+|     ├── prepare_bench.sh       # System tuning for benchmarking
+|     ├── setup_netns.sh         # Network namespace setup
+|     ├── cleanup.sh             # Restore system to normal
+├── benchmark_results/     # Raw results (per-run CSVs)
+└── benchmark_results_standard/  # Pre-tweak QUIC results for comparison
+```
 
 ## License
 
