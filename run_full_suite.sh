@@ -62,12 +62,9 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 if [ ! -f "$SERVER_BIN" ] || [ ! -f "$CLIENT_BIN" ]; then
-    echo "Binaries not found. Building with native CPU optimizations..."
-    RUSTFLAGS="-C target-cpu=native" cargo build --release
-    if [ $? -ne 0 ]; then
-        echo "Build failed."
-        exit 1
-    fi
+    echo "Binaries not found. Build first with:"
+    echo "  RUSTFLAGS=\"-C target-cpu=native\" cargo build --release"
+    exit 1
 fi
 
 # Verify isolated cores
