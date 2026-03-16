@@ -1,0 +1,4 @@
+No Network Emulation (veth direct)
+netem args: 
+qdisc noqueue 0: root refcnt 2 
+qdisc noqueue 0: root refcnt 2 

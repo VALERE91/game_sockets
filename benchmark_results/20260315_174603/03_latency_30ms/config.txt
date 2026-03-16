@@ -1,0 +1,4 @@
+Latency: 30ms ±5ms each way (RTT ~60ms)
+netem args: delay 30ms 5ms distribution normal
+qdisc netem 8003: root refcnt 9 limit 1000 delay 30ms  5ms seed 13551748680239957485
+qdisc netem 8004: root refcnt 9 limit 1000 delay 30ms  5ms seed 16394906052485851406

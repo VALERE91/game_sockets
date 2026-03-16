@@ -1,0 +1,4 @@
+Packet Loss: 1% (symmetric)
+netem args: loss 1%
+qdisc netem 8007: root refcnt 9 limit 1000 loss 1% seed 3491871214458410078
+qdisc netem 8008: root refcnt 9 limit 1000 loss 1% seed 8901364769135760165

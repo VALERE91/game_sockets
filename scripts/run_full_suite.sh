@@ -302,7 +302,7 @@ echo "Estimated runtime: ~${TOTAL_HOURS} hours ($TOTAL_RUNS total runs)"
 echo "Results directory: $RESULTS_DIR"
 echo ""
 echo "Press Enter to start, Ctrl+C to abort..."
-read -r
+#read -r
 
 # Setup
 capture_system_info
