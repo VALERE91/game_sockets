@@ -233,7 +233,7 @@ fn draw_line_chart_with_ci(
         .caption(caption, ("sans-serif", 35).into_font())
         .margin(20)
         .x_label_area_size(50)
-        .y_label_area_size(70)
+        .y_label_area_size(90)
         .build_cartesian_2d(x_range, y_range)?;
 
     chart.configure_mesh()
@@ -321,7 +321,7 @@ fn draw_bar_chart_with_ci(
         .caption(caption, ("sans-serif", 40).into_font())
         .margin(20)
         .x_label_area_size(60)
-        .y_label_area_size(80)
+        .y_label_area_size(110)
         .build_cartesian_2d(-0.5f64..condition_names.len() as f64 - 0.5, 0.0..y_max)?;
 
     chart.configure_mesh()
@@ -442,7 +442,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     draw_line_chart_with_ci(
         "packet_loss_trend_tcp.svg",
         "Latency vs Packet Loss",
-        0.0..6.0, 0.0..900.0,
+        0.0..6.0, 0.0..450.0,
         "Packet Loss (%)", "P99 Latency (ms)",
         &all_protocols, &loss_data_tcp,
     )?;
