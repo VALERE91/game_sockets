@@ -4,303 +4,331 @@ use serde::Deserialize;
 use std::fs::File;
 use std::io::BufReader;
 use std::ops::Range;
-use std::string::ToString;
+
+// =============================================================================
+// JSON Structures (matching aggregated stats.rs output)
+// =============================================================================
 
 #[derive(Deserialize)]
-struct GlobalStats {
-    latency: LatencyStats,
+struct AggregatedReport {
+    scenario: String,
+    protocol: String,
+    num_runs: usize,
+    global: AggregatedStats,
 }
 
 #[derive(Deserialize)]
-struct LatencyStats {
+struct AggregatedStats {
+    latency: AggregatedLatency,
+    loss_rate_percent: SummaryStatistic,
+}
+
+#[derive(Deserialize)]
+struct AggregatedLatency {
+    avg_us: SummaryStatistic,
+    p50_us: SummaryStatistic,
+    p95_us: SummaryStatistic,
+    p99_us: SummaryStatistic,
+}
+
+#[derive(Deserialize)]
+struct SummaryStatistic {
+    median: f64,
+    mean: f64,
+    stddev: f64,
+    ci95_low: f64,
+    ci95_high: f64,
+    min: f64,
+    max: f64,
+}
+
+// =============================================================================
+// Legacy JSON (backward compat for single-run files)
+// =============================================================================
+
+#[derive(Deserialize)]
+struct LegacyJson {
+    global: LegacyGlobal,
+}
+
+#[derive(Deserialize)]
+struct LegacyGlobal {
+    latency: LegacyLatency,
+}
+
+#[derive(Deserialize)]
+struct LegacyLatency {
     avg_us: f64,
     p99_us: f64,
 }
 
-#[derive(Deserialize)]
-struct BenchmarkJson {
-    global: GlobalStats,
-}
+// =============================================================================
+// Constants
+// =============================================================================
 
-const COLOR_UDP: RGBColor = RGBColor(127, 127, 127); // Gray
-const COLOR_TCP: RGBColor = RGBColor(214, 39, 40);   // Red
-const COLOR_QUIC: RGBColor = RGBColor(31, 119, 180); // Blue
-const COLOR_GNS: RGBColor = RGBColor(44, 160, 44);   // Green
+const COLOR_UDP: RGBColor = RGBColor(127, 127, 127);
+const COLOR_TCP: RGBColor = RGBColor(214, 39, 40);
+const COLOR_QUIC: RGBColor = RGBColor(31, 119, 180);
+const COLOR_GNS: RGBColor = RGBColor(44, 160, 44);
 
 const UDP_NAME: &str = "UDP";
 const TCP_NAME: &str = "TCP";
 const QUIC_NAME: &str = "QUIC";
 const GNS_NAME: &str = "GNS";
 
-// Helper to load a specific file
-fn load_latency(path: &str) -> f64 {
-    let file = File::open(path).unwrap_or_else(|_| panic!("Failed to open {}", path));
+fn proto_color(name: &str) -> RGBColor {
+    match name {
+        UDP_NAME => COLOR_UDP,
+        TCP_NAME => COLOR_TCP,
+        QUIC_NAME => COLOR_QUIC,
+        GNS_NAME => COLOR_GNS,
+        _ => COLOR_GNS,
+    }
+}
+
+// =============================================================================
+// Data Loading
+// =============================================================================
+
+/// A data point with error bounds for one (x, protocol) combination
+struct DataPoint {
+    x: f64,
+    protocol: String,
+    median: f64,     // central value (plotted as line)
+    ci_low: f64,     // 95% CI lower bound
+    ci_high: f64,    // 95% CI upper bound
+}
+
+/// Load from aggregated JSON (new format from multi-run stats)
+fn load_aggregated(path: &str) -> Option<AggregatedReport> {
+    let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
-    let data: BenchmarkJson = serde_json::from_reader(reader).expect("JSON Parse Error");
-    data.global.latency.p99_us / 1000.0
+    serde_json::from_reader(reader).ok()
 }
 
-fn load_loss(path: &str) -> Vec<(f64, &str, String)> {
-    vec![
-        (0.0, UDP_NAME, format!("{}/01_baseline/udp.json", path)),
-        (0.0, TCP_NAME, format!("{}/01_baseline/tcp.json", path)),
-        (0.0, QUIC_NAME, format!("{}/01_baseline/quic.json", path)),
-        (0.0, GNS_NAME, format!("{}/01_baseline/gns.json", path)),
-
-        (1.0, UDP_NAME, format!("{}/05_loss_1p/udp.json", path)),
-        (1.0, TCP_NAME, format!("{}/05_loss_1p/tcp.json", path)),
-        (1.0, QUIC_NAME, format!("{}/05_loss_1p/quic.json", path)),
-        (1.0, GNS_NAME, format!("{}/05_loss_1p/gns.json", path)),
-
-        (2.0, UDP_NAME, format!("{}/06_loss_2p/udp.json", path)),
-        (2.0, TCP_NAME, format!("{}/06_loss_2p/tcp.json", path)),
-        (2.0, QUIC_NAME, format!("{}/06_loss_2p/quic.json", path)),
-        (2.0, GNS_NAME, format!("{}/06_loss_2p/gns.json", path)),
-
-        (5.0, UDP_NAME, format!("{}/07_loss_5p/udp.json", path)),
-        (5.0, TCP_NAME, format!("{}/07_loss_5p/tcp.json", path)),
-        (5.0, QUIC_NAME, format!("{}/07_loss_5p/quic.json", path)),
-        (5.0, GNS_NAME, format!("{}/07_loss_5p/gns.json", path)),
-    ]
+/// Load from legacy single-run JSON (backward compat)
+fn load_legacy(path: &str) -> Option<LegacyJson> {
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    serde_json::from_reader(reader).ok()
 }
 
-fn load_loss_no_tcp(path: &str) -> Vec<(f64, &str, String)> {
-    vec![
-        (0.0, UDP_NAME, format!("{}/01_baseline/udp.json", path)),
-        (0.0, QUIC_NAME, format!("{}/01_baseline/quic.json", path)),
-        (0.0, GNS_NAME, format!("{}/01_baseline/gns.json", path)),
-
-        (1.0, UDP_NAME, format!("{}/05_loss_1p/udp.json", path)),
-        (1.0, QUIC_NAME, format!("{}/05_loss_1p/quic.json", path)),
-        (1.0, GNS_NAME, format!("{}/05_loss_1p/gns.json", path)),
-
-        (2.0, UDP_NAME, format!("{}/06_loss_2p/udp.json", path)),
-        (2.0, QUIC_NAME, format!("{}/06_loss_2p/quic.json", path)),
-        (2.0, GNS_NAME, format!("{}/06_loss_2p/gns.json", path)),
-
-        (5.0, UDP_NAME, format!("{}/07_loss_5p/udp.json", path)),
-        (5.0, QUIC_NAME, format!("{}/07_loss_5p/quic.json", path)),
-        (5.0, GNS_NAME, format!("{}/07_loss_5p/gns.json", path)),
-    ]
+/// Try aggregated first, fall back to legacy. Returns (median_ms, ci_low_ms, ci_high_ms).
+fn load_p99_with_ci(path: &str) -> (f64, f64, f64) {
+    if let Some(agg) = load_aggregated(path) {
+        let stat = &agg.global.latency.p99_us;
+        (stat.median / 1000.0, stat.ci95_low / 1000.0, stat.ci95_high / 1000.0)
+    } else if let Some(legacy) = load_legacy(path) {
+        let val = legacy.global.latency.p99_us / 1000.0;
+        (val, val, val) // no CI for single run
+    } else {
+        eprintln!("Warning: Could not load {}", path);
+        (0.0, 0.0, 0.0)
+    }
 }
 
-fn load_latency_data(path: &str) -> Vec<(f64, &str, String)> {
-    vec![
-        (0.0, UDP_NAME, format!("{}/01_baseline/udp.json", path)),
-        (0.0, TCP_NAME, format!("{}/01_baseline/tcp.json", path)),
-        (0.0, QUIC_NAME, format!("{}/01_baseline/quic.json", path)),
-        (0.0, GNS_NAME, format!("{}/01_baseline/gns.json", path)),
-
-        (10.0, UDP_NAME, format!("{}/02_latency_10ms/udp.json", path)),
-        (10.0, TCP_NAME, format!("{}/02_latency_10ms/tcp.json", path)),
-        (10.0, QUIC_NAME, format!("{}/02_latency_10ms/quic.json", path)),
-        (10.0, GNS_NAME, format!("{}/02_latency_10ms/gns.json", path)),
-
-        (30.0, UDP_NAME, format!("{}/03_latency_30ms/udp.json", path)),
-        (30.0, TCP_NAME, format!("{}/03_latency_30ms/tcp.json", path)),
-        (30.0, QUIC_NAME, format!("{}/03_latency_30ms/quic.json", path)),
-        (30.0, GNS_NAME, format!("{}/03_latency_30ms/gns.json", path)),
-
-        (50.0, UDP_NAME, format!("{}/04_latency_50ms/udp.json", path)),
-        (50.0, TCP_NAME, format!("{}/04_latency_50ms/tcp.json", path)),
-        (50.0, QUIC_NAME, format!("{}/04_latency_50ms/quic.json", path)),
-        (50.0, GNS_NAME, format!("{}/04_latency_50ms/gns.json", path)),
-    ]
+fn load_avg_with_ci(path: &str) -> (f64, f64, f64) {
+    if let Some(agg) = load_aggregated(path) {
+        let stat = &agg.global.latency.avg_us;
+        (stat.median / 1000.0, stat.ci95_low / 1000.0, stat.ci95_high / 1000.0)
+    } else if let Some(legacy) = load_legacy(path) {
+        let val = legacy.global.latency.avg_us / 1000.0;
+        (val, val, val)
+    } else {
+        eprintln!("Warning: Could not load {}", path);
+        (0.0, 0.0, 0.0)
+    }
 }
 
-fn draw_line_chart(path: &str,
-                   caption: &str,
-                   x_range: Range<f64>,
-                   y_range: Range<f64>,
-                   x_desc: &str,
-                   y_desc: &str,
-                   data_color: &Vec<(&str, &RGBColor)>,
-                   data: &Vec<(f64, &str, String)>) -> Result<(),()> {
-    //Prepare Drawing Area (SVG)
+// =============================================================================
+// Data Point Builders
+// =============================================================================
+
+fn build_latency_data(base: &str) -> Vec<DataPoint> {
+    let scenarios = vec![
+        (0.0, "01_baseline"),
+        (10.0, "02_latency_10ms"),
+        (30.0, "03_latency_30ms"),
+        (50.0, "04_latency_50ms"),
+    ];
+    let protocols = vec![UDP_NAME, TCP_NAME, QUIC_NAME, GNS_NAME];
+
+    let mut points = Vec::new();
+    for (x, scenario) in &scenarios {
+        for proto in &protocols {
+            let path = format!("{}/aggregated/{}_{}.json", base, scenario, proto.to_lowercase());
+            let (med, lo, hi) = load_p99_with_ci(&path);
+            points.push(DataPoint {
+                x: *x, protocol: proto.to_string(), median: med, ci_low: lo, ci_high: hi,
+            });
+        }
+    }
+    points
+}
+
+fn build_loss_data(base: &str, include_tcp: bool) -> Vec<DataPoint> {
+    let scenarios = vec![
+        (0.0, "01_baseline"),
+        (1.0, "05_loss_1p"),
+        (2.0, "06_loss_2p"),
+        (5.0, "07_loss_5p"),
+    ];
+    let mut protocols = vec![UDP_NAME, QUIC_NAME, GNS_NAME];
+    if include_tcp {
+        protocols.insert(1, TCP_NAME);
+    }
+
+    let mut points = Vec::new();
+    for (x, scenario) in &scenarios {
+        for proto in &protocols {
+            let path = format!("{}/aggregated/{}_{}.json", base, scenario, proto.to_lowercase());
+            let (med, lo, hi) = load_p99_with_ci(&path);
+            points.push(DataPoint {
+                x: *x, protocol: proto.to_string(), median: med, ci_low: lo, ci_high: hi,
+            });
+        }
+    }
+    points
+}
+
+fn build_scenario_data(base: &str) -> Vec<DataPoint> {
+    let scenarios = vec![
+        (0.0, "08_full_fiber"),
+        (1.0, "09_full_good"),
+        (2.0, "10_full_bad"),
+    ];
+    let protocols = vec![UDP_NAME, TCP_NAME, QUIC_NAME, GNS_NAME];
+
+    let mut points = Vec::new();
+    for (x, scenario) in &scenarios {
+        for proto in &protocols {
+            let path = format!("{}/aggregated/{}_{}.json", base, scenario, proto.to_lowercase());
+            let (med, lo, hi) = load_p99_with_ci(&path);
+            points.push(DataPoint {
+                x: *x, protocol: proto.to_string(), median: med, ci_low: lo, ci_high: hi,
+            });
+        }
+    }
+    points
+}
+
+// =============================================================================
+// Chart Drawing with Error Bars
+// =============================================================================
+
+fn draw_line_chart_with_ci(
+    path: &str,
+    caption: &str,
+    x_range: Range<f64>,
+    y_range: Range<f64>,
+    x_desc: &str,
+    y_desc: &str,
+    protocols: &[&str],
+    data: &[DataPoint],
+) -> Result<(), Box<dyn std::error::Error>> {
     let root = SVGBackend::new(path, (800, 600)).into_drawing_area();
-    root.fill(&WHITE).map_err(|_| ())?;
+    root.fill(&WHITE)?;
 
-    // Configure Chart
     let mut chart = ChartBuilder::on(&root)
         .caption(caption, ("sans-serif", 35).into_font())
         .margin(20)
         .x_label_area_size(50)
         .y_label_area_size(70)
-        .build_cartesian_2d(x_range, y_range).map_err(|_| ())?; // Axis Ranges: X (0-4%), Y (0-500ms)
+        .build_cartesian_2d(x_range, y_range)?;
 
     chart.configure_mesh()
         .x_desc(x_desc)
         .y_desc(y_desc)
-        .axis_desc_style(("sans-serif", 30)) // Increased font size for axis titles
-        .label_style(("sans-serif", 20))     // Increased font size for tick marks
-        .draw().map_err(|_| ())?;
+        .axis_desc_style(("sans-serif", 30))
+        .label_style(("sans-serif", 20))
+        .draw()?;
 
-    for (name, color) in data_color {
-        let series_data: Vec<(f64, f64)> = data.iter()
-            .filter(|p| p.1.eq_ignore_ascii_case(name))
-            .map(|p| {
-                let p99 = load_latency(p.2.as_str());
-                (p.0, p99)
-            })
+    for proto in protocols {
+        let color = proto_color(proto);
+        let proto_data: Vec<&DataPoint> = data.iter()
+            .filter(|p| p.protocol == *proto)
             .collect();
 
-        chart.draw_series(LineSeries::new(series_data, color.stroke_width(3))).map_err(|_| ())?
-            .label(name.to_string())
+        // Draw line (median values)
+        let line_data: Vec<(f64, f64)> = proto_data.iter()
+            .map(|p| (p.x, p.median))
+            .collect();
+
+        chart.draw_series(LineSeries::new(line_data, color.stroke_width(3)))?
+            .label(proto.to_string())
             .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color.filled()));
+
+        // Draw error bars (95% CI)
+        for p in &proto_data {
+            // Skip error bars if no CI (single run)
+            if (p.ci_high - p.ci_low).abs() < 0.001 { continue; }
+
+            // Vertical bar
+            chart.draw_series(std::iter::once(
+                PathElement::new(
+                    vec![(p.x, p.ci_low), (p.x, p.ci_high)],
+                    color.stroke_width(1),
+                )
+            ))?;
+
+            // Top cap
+            let cap_w = 0.3;
+            chart.draw_series(std::iter::once(
+                PathElement::new(
+                    vec![(p.x - cap_w * 0.1, p.ci_high), (p.x + cap_w * 0.1, p.ci_high)],
+                    color.stroke_width(1),
+                )
+            ))?;
+
+            // Bottom cap
+            chart.draw_series(std::iter::once(
+                PathElement::new(
+                    vec![(p.x - cap_w * 0.1, p.ci_low), (p.x + cap_w * 0.1, p.ci_low)],
+                    color.stroke_width(1),
+                )
+            ))?;
+
+            // Dot at median
+            chart.draw_series(std::iter::once(
+                Circle::new((p.x, p.median), 4, color.filled())
+            ))?;
+        }
     }
 
     chart.configure_series_labels()
         .background_style(&WHITE.mix(0.8))
         .border_style(&BLACK)
-        .label_font(("sans-serif", 20)) // Increased font size for legend
-        .draw()
-        .map_err(|_| ())?;
+        .label_font(("sans-serif", 20))
+        .draw()?;
 
-    println!("{}", format!("Saved to {}", path));
+    root.present()?;
+    println!("Saved to {}", path);
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let data_points_loss = load_loss("benchmark_results");
-    let data_points_loss_no_tcp = load_loss_no_tcp("benchmark_results");
-    let data_points_latency = load_latency_data("benchmark_results");
-
-    let protocols = vec![
-        ("UDP", &COLOR_UDP),
-        ("TCP", &COLOR_TCP),
-        ("QUIC", &COLOR_QUIC),
-        ("GNS", &COLOR_GNS),
-    ];
-
-    draw_line_chart("packet_loss_trend_tcp.svg",
-                    "Latency vs Packet Loss",
-                    0.0..6.0,
-                    0.0..900.0,
-                    "Packet Loss (%)",
-                    "Average Latency (ms)",
-                    &protocols,
-                    &data_points_loss).unwrap();
-
-    draw_line_chart("latency_trend.svg",
-                    "Protocol Latency vs Network Latency",
-                    0.0..60.0,
-                    0.0..350.0,
-                    "Network Latency (ms)",
-                    "Protocol Latency (ms)",
-                    &protocols,
-                    &data_points_latency).unwrap();
-
-    let protocols = vec![
-        ("UDP", &COLOR_UDP),
-        ("QUIC", &COLOR_QUIC),
-        ("GNS", &COLOR_GNS),
-    ];
-
-    draw_line_chart("packet_loss_trend_no_tcp.svg",
-                    "Latency vs Packet Loss (No TCP)",
-                    0.0..6.0,
-                    0.0..100.0,
-                    "Packet Loss (%)",
-                    "Average Latency (ms)",
-                    &protocols,
-                    &data_points_loss_no_tcp).unwrap();
-
-    // Generate the bar charts
-    draw_bars()?;
-
-    Ok(())
-}
-
-// Helper to load data
-fn load_metric(path: &str, use_p99: bool) -> f64 {
-    let file = match File::open(path) {
-        Ok(f) => f,
-        Err(_) => {
-            eprintln!("Warning: Could not open file {}, returning 0.0", path);
-            return 0.0;
-        }
-    };
-    let reader = BufReader::new(file);
-    let json: BenchmarkJson = serde_json::from_reader(reader).unwrap_or_else(|_| {
-        panic!("Failed to parse JSON: {}", path)
-    });
-
-    let val_us = if use_p99 {
-        json.global.latency.p99_us
-    } else {
-        json.global.latency.avg_us
-    };
-    val_us / 1000.0 // Convert us to ms
-}
-
-struct ScenarioData {
-    name: String,               // e.g., "Excellent"
-    data: HashMap<String, f64>, // Protocol -> Value (ms)
-}
-
-fn draw_bars() -> Result<(), Box<dyn std::error::Error>> {
-    let protocols = vec![UDP_NAME, TCP_NAME, QUIC_NAME, GNS_NAME];
-    let condition_names = vec!["Excellent", "Good", "Bad"];
-
-    // Data Loading Logic (Act 3)
-    let scenarios = vec![
-        ScenarioData {
-            name: "Excellent".to_string(),
-            data: HashMap::from([
-                (UDP_NAME.to_string(),  load_metric("benchmark_results/08_full_fiber/udp.json", true)),
-                (TCP_NAME.to_string(),  load_metric("benchmark_results/08_full_fiber/tcp.json", true)),
-                (QUIC_NAME.to_string(), load_metric("benchmark_results/08_full_fiber/quic.json", true)),
-                (GNS_NAME.to_string(),  load_metric("benchmark_results/08_full_fiber/gns.json", true)),
-            ]),
-        },
-        ScenarioData {
-            name: "Good".to_string(),
-            data: HashMap::from([
-                (UDP_NAME.to_string(),  load_metric("benchmark_results/09_full_good/udp.json", true)),
-                (TCP_NAME.to_string(),  load_metric("benchmark_results/09_full_good/tcp.json", true)),
-                (QUIC_NAME.to_string(), load_metric("benchmark_results/09_full_good/quic.json", true)),
-                (GNS_NAME.to_string(),  load_metric("benchmark_results/09_full_good/gns.json", true)),
-            ]),
-        },
-        ScenarioData {
-            name: "Bad".to_string(),
-            data: HashMap::from([
-                (UDP_NAME.to_string(),  load_metric("benchmark_results/10_full_bad/udp.json", true)),
-                (TCP_NAME.to_string(),  load_metric("benchmark_results/10_full_bad/tcp.json", true)),
-                (QUIC_NAME.to_string(), load_metric("benchmark_results/10_full_bad/quic.json", true)),
-                (GNS_NAME.to_string(),  load_metric("benchmark_results/10_full_bad/gns.json", true)),
-            ]),
-        },
-    ];
-
-    // Calculate max Y for scaling
-    let max_val = scenarios.iter()
-        .flat_map(|s| s.data.values())
-        .fold(0.0f64, |a, &b| a.max(b));
-    let y_max = max_val * 1.1; // Add 10% headroom
-
-    // ==========================================
-    // DRAWING LOGIC
-    // ==========================================
-    let root = SVGBackend::new("scenario.svg", (1000, 600)).into_drawing_area();
+fn draw_bar_chart_with_ci(
+    path: &str,
+    caption: &str,
+    y_max: f64,
+    condition_names: &[&str],
+    protocols: &[&str],
+    data: &[DataPoint],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = SVGBackend::new(path, (1000, 600)).into_drawing_area();
     root.fill(&WHITE)?;
 
-    // We use a float coordinate system (-0.5 to 2.5) to center the bars perfectly
     let mut chart = ChartBuilder::on(&root)
-        .caption("Protocol Performance by Network Condition (P99 Latency)", ("sans-serif", 40).into_font())
+        .caption(caption, ("sans-serif", 40).into_font())
         .margin(20)
         .x_label_area_size(60)
         .y_label_area_size(80)
-        .build_cartesian_2d(
-            -0.5f64..2.5f64, // X: Float range for centering
-            0.0..y_max       // Y: 0..Max
-        )?;
+        .build_cartesian_2d(-0.5f64..condition_names.len() as f64 - 0.5, 0.0..y_max)?;
 
     chart.configure_mesh()
-        .x_labels(3)
+        .x_labels(condition_names.len())
         .y_desc("Latency (ms)")
-        .axis_desc_style(("sans-serif", 35)) // Increased font
-        .label_style(("sans-serif", 25))     // Increased font
+        .axis_desc_style(("sans-serif", 35))
+        .label_style(("sans-serif", 25))
         .x_label_formatter(&|v| {
             let idx = v.round();
             if (v - idx).abs() < 0.1 {
@@ -313,64 +341,135 @@ fn draw_bars() -> Result<(), Box<dyn std::error::Error>> {
         })
         .draw()?;
 
-    // Grouped Bar Calculation
     let total_bars = protocols.len();
-    let total_width_ratio = 0.8; // Bars take up 80% of the category width
+    let total_width_ratio = 0.8;
     let bar_width = total_width_ratio / total_bars as f64;
 
-    // Draw Bars
-    for (scenario_idx, scenario) in scenarios.iter().enumerate() {
-        for (proto_idx, proto) in protocols.iter().enumerate() {
-            let val = *scenario.data.get(*proto).unwrap_or(&0.0);
+    for p in data {
+        let group_idx = p.x as usize;
+        let proto_idx = protocols.iter().position(|&name| name == p.protocol).unwrap_or(0);
+        let color = proto_color(&p.protocol);
 
-            // Calculate exact X position
-            let group_center = scenario_idx as f64;
-            let group_start_x = group_center - (total_width_ratio / 2.0);
+        let group_center = group_idx as f64;
+        let group_start_x = group_center - (total_width_ratio / 2.0);
+        let bar_start_x = group_start_x + (proto_idx as f64 * bar_width);
+        let bar_end_x = bar_start_x + bar_width;
+        let bar_center_x = (bar_start_x + bar_end_x) / 2.0;
 
-            let bar_start_x = group_start_x + (proto_idx as f64 * bar_width);
-            let bar_end_x = bar_start_x + bar_width;
+        // Draw bar
+        chart.draw_series(std::iter::once(
+            Rectangle::new(
+                [(bar_start_x, 0.0), (bar_end_x, p.median)],
+                color.filled(),
+            )
+        ))?;
 
-            let color = match *proto {
-                UDP_NAME => COLOR_UDP,
-                TCP_NAME => COLOR_TCP,
-                QUIC_NAME => COLOR_QUIC,
-                GNS_NAME => COLOR_GNS,
-                _ => COLOR_GNS,
-            };
+        // Draw error bar if CI exists
+        if (p.ci_high - p.ci_low).abs() > 0.001 {
+            let cap_w = bar_width * 0.3;
 
-            // Draw Rectangle
+            // Vertical line
             chart.draw_series(std::iter::once(
-                Rectangle::new(
-                    [(bar_start_x, 0.0), (bar_end_x, val)],
-                    color.filled()
+                PathElement::new(
+                    vec![(bar_center_x, p.ci_low), (bar_center_x, p.ci_high)],
+                    BLACK.stroke_width(2),
+                )
+            ))?;
+
+            // Top cap
+            chart.draw_series(std::iter::once(
+                PathElement::new(
+                    vec![(bar_center_x - cap_w, p.ci_high), (bar_center_x + cap_w, p.ci_high)],
+                    BLACK.stroke_width(2),
+                )
+            ))?;
+
+            // Bottom cap
+            chart.draw_series(std::iter::once(
+                PathElement::new(
+                    vec![(bar_center_x - cap_w, p.ci_low), (bar_center_x + cap_w, p.ci_low)],
+                    BLACK.stroke_width(2),
                 )
             ))?;
         }
     }
 
-    // ==========================================
-    // LEGEND
-    // ==========================================
+    // Legend
     for proto in protocols {
-        let color = match proto {
-            UDP_NAME => COLOR_UDP,
-            TCP_NAME => COLOR_TCP,
-            QUIC_NAME => COLOR_QUIC,
-            _ => COLOR_GNS,
-        };
-
+        let color = proto_color(proto);
         chart.draw_series(std::iter::once(PathElement::new(vec![], color.filled())))?
-            .label(proto)
+            .label(proto.to_string())
             .legend(move |(x, y)| Rectangle::new([(x, y - 5), (x + 10, y + 5)], color.filled()));
     }
 
     chart.configure_series_labels()
         .background_style(&WHITE.mix(0.8))
         .border_style(&BLACK)
-        .label_font(("sans-serif", 20)) // Increased legend font
+        .label_font(("sans-serif", 20))
         .position(SeriesLabelPosition::UpperLeft)
         .draw()?;
 
-    println!("Saved to scenario.svg");
+    root.present()?;
+    println!("Saved to {}", path);
+    Ok(())
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    let base = if args.len() > 1 { &args[1] } else { "benchmark_results" };
+
+    let all_protocols = vec![UDP_NAME, TCP_NAME, QUIC_NAME, GNS_NAME];
+    let no_tcp = vec![UDP_NAME, QUIC_NAME, GNS_NAME];
+
+    // --- Line Charts ---
+
+    let latency_data = build_latency_data(base);
+    let loss_data_tcp = build_loss_data(base, true);
+    let loss_data_no_tcp = build_loss_data(base, false);
+
+    draw_line_chart_with_ci(
+        "latency_trend.svg",
+        "Protocol Latency vs Network Latency",
+        0.0..60.0, 0.0..350.0,
+        "Network Latency (ms)", "P99 Latency (ms)",
+        &all_protocols, &latency_data,
+    )?;
+
+    draw_line_chart_with_ci(
+        "packet_loss_trend_tcp.svg",
+        "Latency vs Packet Loss",
+        0.0..6.0, 0.0..900.0,
+        "Packet Loss (%)", "P99 Latency (ms)",
+        &all_protocols, &loss_data_tcp,
+    )?;
+
+    draw_line_chart_with_ci(
+        "packet_loss_trend_no_tcp.svg",
+        "Latency vs Packet Loss (No TCP)",
+        0.0..6.0, 0.0..100.0,
+        "Packet Loss (%)", "P99 Latency (ms)",
+        &no_tcp, &loss_data_no_tcp,
+    )?;
+
+    // --- Bar Charts ---
+
+    let scenario_data = build_scenario_data(base);
+    let y_max = scenario_data.iter()
+        .map(|p| p.ci_high.max(p.median))
+        .fold(0.0f64, |a, b| a.max(b)) * 1.1;
+
+    draw_bar_chart_with_ci(
+        "scenario.svg",
+        "Protocol Performance by Network Condition (P99)",
+        y_max,
+        &["Excellent", "Good", "Bad"],
+        &all_protocols,
+        &scenario_data,
+    )?;
+
     Ok(())
 }
