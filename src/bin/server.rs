@@ -4,7 +4,14 @@ use std::vec;
 use clap::Parser;
 use tracing::{debug, error, info, warn};
 use game_sockets::*;
-use game_sockets::protocols::*;
+#[cfg(feature = "quic")]
+use game_sockets::protocols::{QuicBackend};
+#[cfg(feature = "gns")]
+use game_sockets::protocols::{GnsBackend};
+#[cfg(feature = "tcp")]
+use game_sockets::protocols::{TcpBackend};
+#[cfg(feature = "udp")]
+use game_sockets::protocols::UdpBackend;
 use crate::utils::TestProtocol;
 
 struct GlobalState {
@@ -67,14 +74,28 @@ fn main() -> Result<(), GameSocketError> {
             run_benchmark(client, &args)
         },
         TestProtocol::Quic => {
-            let backend = QuicBackend::new();
-            let client = GamePeer::new(backend);
-            run_benchmark(client, &args)
+            #[cfg(feature = "quic")]
+            {
+                let backend = QuicBackend::new();
+                let client = GamePeer::new(backend);
+                run_benchmark(client, &args)
+            }
+            #[cfg(not(feature = "quic"))]
+            {
+                Ok(())
+            }
         },
         TestProtocol::GNS => {
-            let backend = GnsBackend::new();
-            let client = GamePeer::new(backend);
-            run_benchmark(client, &args)
+            #[cfg(feature = "gns")]
+            {
+                let backend = GnsBackend::new();
+                let client = GamePeer::new(backend);
+                run_benchmark(client, &args)
+            }
+            #[cfg(not(feature = "gns"))]
+            {
+                Ok(())
+            }
         },
     }
 }

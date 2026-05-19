@@ -1,9 +1,16 @@
+#[cfg(feature = "udp")]
 mod udp_protocol;
-mod tcp_protocol;
-mod quic_protocol;
-mod gns_protocol;
-
+#[cfg(feature = "udp")]
 pub use udp_protocol::UdpBackend;
+#[cfg(feature = "tcp")]
+mod tcp_protocol;
+#[cfg(feature = "tcp")]
 pub use tcp_protocol::TcpBackend;
+#[cfg(feature = "quic")]
+mod quic_protocol;
+#[cfg(feature = "quic")]
 pub use quic_protocol::QuicBackend;
+#[cfg(feature = "gns")]
+mod gns_protocol;
+#[cfg(feature = "gns")]
 pub use gns_protocol::GnsBackend;

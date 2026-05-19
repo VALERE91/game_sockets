@@ -6,7 +6,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use clap::{Parser};
 use tracing::{debug, info, warn};
 use game_sockets::{GameConnection, GameNetworkEvent, GamePeer, GameSocketError, GameStream, GameStreamReliability};
-use game_sockets::protocols::{GnsBackend, QuicBackend, TcpBackend, UdpBackend};
+#[cfg(feature = "quic")]
+use game_sockets::protocols::{QuicBackend};
+#[cfg(feature = "gns")]
+use game_sockets::protocols::{GnsBackend};
+#[cfg(feature = "tcp")]
+use game_sockets::protocols::{TcpBackend};
+#[cfg(feature = "udp")]
+use game_sockets::protocols::UdpBackend;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -46,14 +53,29 @@ fn main() -> Result<(), GameSocketError> {
             run_benchmark(client, &args)
         },
         TestProtocol::Quic => {
-            let backend = QuicBackend::new();
-            let client = GamePeer::new(backend);
-            run_benchmark(client, &args)
+            #[cfg(feature = "quic")]
+            {
+                let backend = QuicBackend::new();
+                let client = GamePeer::new(backend);
+                run_benchmark(client, &args)
+            }
+            #[cfg(not(feature = "quic"))]
+            {
+                Ok(())
+            }
         },
         TestProtocol::GNS => {
-            let backend = GnsBackend::new();
-            let client = GamePeer::new(backend);
-            run_benchmark(client, &args)
+            #[cfg(feature = "gns")]
+            {
+                let backend = GnsBackend::new();
+                let client = GamePeer::new(backend);
+                run_benchmark(client, &args)
+            }
+
+            #[cfg(not(feature = "gns"))]
+            {
+                Ok(())
+            }
         },
     }
 }
